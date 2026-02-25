@@ -1,0 +1,23 @@
+# Arduino build files
+*.ino.cpp
+*.ino.h
+*.elf
+*.map
+*.hex
+/build/
+/tmp/
+
+# VS Code
+.vscode/
+.idea/
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# MacOS
+.DS_Store
+
+# Windows
+Thumbs.db
