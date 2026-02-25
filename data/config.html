@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+    <title>Настройка подключения помпы</title>
+    <style>
+        body { font-family: Arial; text-align: center; margin-top: 50px; background: #f0f0f0; }
+        .container { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; font-size: 24px; }
+        h2 { color: #666; font-size: 18px; margin-top: 20px; }
+        label { display: block; margin: 20px 0 5px; text-align: left; color: #666; }
+        select, input { width: 100%; padding: 12px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; font-size: 16px; }
+        button { background: #4CAF50; color: white; border: none; padding: 15px; font-size: 18px; border-radius: 5px; cursor: pointer; width: 100%; }
+        button:hover { background: #45a049; }
+        .scan-btn { background: #2196F3; margin-bottom: 20px; }
+        .scan-btn:hover { background: #0b7dda; }
+        .section { background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        .info { color: #666; margin: 10px 0; font-size: 14px; }
+        #status { margin-top: 20px; padding: 10px; border-radius: 5px; display: none; }
+        .loading { display: inline-block; width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .note { color: #888; font-size: 12px; text-align: left; margin-top: -15px; margin-bottom: 20px; }
+    </style>
+    <script>
+        function scanNetworks() {
+            document.getElementById('status').style.display = 'block';
+            document.getElementById('status').innerHTML = '<div class="loading"></div> Сканирование Wi-Fi сетей...';
+            
+            fetch('/scan')
+                .then(response => response.json())
+                .then(data => {
+                    let select = document.getElementById('ssid');
+                    select.innerHTML = '<option value="">-- Выберите Wi-Fi сеть --</option>';
+                    
+                    if (data.networks && data.networks.length > 0) {
+                        data.networks.forEach(network => {
+                            let option = document.createElement('option');
+                            option.value = network.ssid;
+                            
+                            let signal = '📶';
+                            if (network.rssi > -50) signal = '📶📶📶';
+                            else if (network.rssi > -70) signal = '📶📶';
+                            
+                            let encrypted = network.encryption ? '🔒' : '🔓';
+                            option.text = `${signal} ${network.ssid} ${encrypted}`;
+                            select.appendChild(option);
+                        });
+                        document.getElementById('status').style.display = 'none';
+                    } else {
+                        document.getElementById('status').innerHTML = 'Сети не найдены. Попробуйте снова.';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('status').innerHTML = 'Ошибка сканирования сетей: ' + error;
+                });
+        }
+        
+        function validateForm() {
+            let ssid = document.getElementById('ssid').value;
+            let wifiPass = document.getElementById('wifi_password').value;
+            let mqttUser = document.getElementById('mqtt_username').value;
+            let mqttPass = document.getElementById('mqtt_password').value;
+            
+            if (!ssid) {
+                alert('Пожалуйста, выберите Wi-Fi сеть');
+                return false;
+            }
+            if (!wifiPass) {
+                alert('Пожалуйста, введите пароль Wi-Fi');
+                return false;
+            }
+            if (!mqttUser) {
+                alert('Пожалуйста, введите имя пользователя MQTT (логин Dealgate)');
+                return false;
+            }
+            if (!mqttPass) {
+                alert('Пожалуйста, введите пароль MQTT (пароль Dealgate)');
+                return false;
+            }
+            return true;
+        }
+        
+        window.onload = function() {
+            scanNetworks();
+        };
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>Настройка подключения помпы</h1>
+        <p class="info">Настройте Wi-Fi и MQTT подключение к Dealgate</p>
+        
+        <button class="scan-btn" onclick="scanNetworks()">🔄 Сканировать Wi-Fi сети</button>
+        
+        <form action="/save" method="post" onsubmit="return validateForm()">
+            <div class="section">
+                <h2>Настройки Wi-Fi</h2>
+                
+                <label for="ssid">Выберите Wi-Fi сеть:</label>
+                <select id="ssid" name="ssid" required>
+                    <option value="">-- Сканирование сетей --</option>
+                </select>
+                
+                <label for="wifi_password">Пароль Wi-Fi:</label>
+                <input type="password" id="wifi_password" name="wifi_password" placeholder="Введите пароль Wi-Fi" required>
+            </div>
+            
+            <div class="section">
+                <h2>Настройки MQTT (Dealgate)</h2>
+                <p class="note">Введите данные из профиля <strong>dealgate.ru</strong> → раздел MQTT Server</p>
+                
+                <label for="mqtt_username">Имя пользователя MQTT:</label>
+                <input type="text" id="mqtt_username" name="mqtt_username" placeholder="Ваш логин MQTT от Dealgate" required>
+                
+                <label for="mqtt_password">Пароль MQTT:</label>
+                <input type="password" id="mqtt_password" name="mqtt_password" placeholder="Ваш пароль MQTT от Dealgate" required>
+            </div>
+            
+            <button type="submit">Сохранить и подключиться</button>
+        </form>
+        
+        <div id="status"></div>
+    </div>
+</body>
+</html>
