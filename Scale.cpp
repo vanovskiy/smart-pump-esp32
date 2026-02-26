@@ -280,10 +280,17 @@ void Scale::resetCalibration() {
     emptyWeight = 0;
     calibrationFactor = 0.42f;
     
-    // Если адрес был сохранен, стираем флаг в EEPROM
     if (eepromAddr >= 0 && eepromAddr <= 508) {
-        EEPROM.write(eepromAddr, 0x00);  // Очищаем флаг
+        // Очищаем флаг
+        EEPROM.write(eepromAddr, 0x00);
+        
+        // Очищаем emptyWeight
+        float zero = 0.0f;
+        EEPROM.put(eepromAddr + 4, zero);
+        
+        // Восстанавливаем calibrationFactor по умолчанию
+        EEPROM.put(eepromAddr + 8, 0.42f);
+        
         EEPROM.commit();
-        Serial.println("Calibration reset in EEPROM");
     }
 }

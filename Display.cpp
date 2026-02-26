@@ -150,24 +150,17 @@ void Display::update(SystemState state, ErrorType error, bool kettlePresent,
  * Показывает SSID и пароль для подключения к режиму настройки
  */
 void Display::drawAPCredentials(SystemState state) {
-  bool isAPMode = (WiFi.getMode() & WIFI_AP) != 0;
+    bool isAPMode = (WiFi.getMode() & WIFI_AP) != 0;
 
-  if (isAPMode) {
-    // Не показываем данные точки доступа во время налива/инициализации/ошибки
-    if (state == ST_FILLING || state == ST_INIT || state == ST_ERROR) {
-      return;
+    if (isAPMode) {
+        if (state == ST_FILLING || state == ST_INIT || state == ST_ERROR) {
+            return;
+        }
+
+        String apInfo = "Smart_Pump_AP/12345678";
+        int textWidth = oled.getStrWidth(apInfo.c_str());
+        drawStringSafe((128 - textWidth) / 2, 54, apInfo, u8g2_font_5x7_tf, 110);
     }
-
-    // Используем самый узкий шрифт (5x7), чтобы поместилась длинная строка
-    oled.setFont(u8g2_font_5x7_tf);
-    String apInfo = "Smart_Pump_AP/12345678";
-    int textWidth = oled.getStrWidth(apInfo.c_str());
-    int xPos = (128 - textWidth) / 2;
-    int yPos = 54;
-
-    oled.setCursor(xPos, yPos);
-    oled.print(apInfo);
-  }
 }
 
 // ==================== ЭКРАН СБРОСА ====================
@@ -375,37 +368,26 @@ void Display::drawErrorScreen(ErrorType error) {
  * @param powerRelayState - состояние реле питания чайника
  */
 void Display::drawIdleScreen(bool kettlePresent, float waterVolume, bool powerRelayState) {
-  // Рисуем значки в верхних углах
-  drawPowerIcon(powerRelayState);
-  drawWiFiIcon();
+    drawPowerIcon(powerRelayState);
+    drawWiFiIcon();
 
-  // Статус системы (ГОТОВ / НЕТ ЧАЙНИКА)
-  String statusStr = kettlePresent ? "ГОТОВ" : "НЕТ ЧАЙНИКА";
-  drawTextBetweenIcons(0, statusStr, powerRelayState, u8g2_font_fub14_tf);
+    String statusStr = kettlePresent ? "ГОТОВ" : "НЕТ ЧАЙНИКА";
+    drawTextBetweenIcons(0, statusStr, powerRelayState, u8g2_font_fub14_tf);
 
-  // Количество кружек (только цифра)
-  int cups = mlToCups(waterVolume);
-  String cupsStr = String(cups);
+    int cups = mlToCups(waterVolume);
+    String cupsStr = String(cups);
 
-  oled.setFont(u8g2_font_fub20_tf);
-  int cupsWidth = oled.getStrWidth(cupsStr.c_str());
-  int totalWidth = cupsWidth + 20 + 4;  // Ширина цифры + иконка + отступ
-  int startX = (128 - totalWidth) / 2;  // Центрирование блока
-  int textBaselineY = 28;
-  int iconY = textBaselineY + 1;
+    int blockWidth = calculateCupsBlockWidth(cupsStr, u8g2_font_fub20_tf);
+    int startX = centerBlock(blockWidth);
+    
+    drawCupsWithIcon(startX, 28, cupsStr, u8g2_font_fub20_tf);
 
-  oled.setCursor(startX, textBaselineY);
-  oled.print(cupsStr);
-  oled.drawXBMP(startX + cupsWidth + 4, iconY, 20, 20, cup_20x20);
-
-  // Подсказка для запуска режима настройки (если Wi-Fi не настроен)
-  if (!isWiFiConfigured && kettlePresent) {
-    oled.setFont(u8g2_font_5x7_tf);
-    String hint = "Удерживайте для настройки";
-    int hintWidth = oled.getStrWidth(hint.c_str());
-    oled.setCursor((128 - hintWidth) / 2, 55);
-    oled.print(hint);
-  }
+    if (!isWiFiConfigured && kettlePresent) {
+        String hint = "Удерживайте для настройки";
+        int hintWidth = oled.getStrWidth(hint.c_str());
+        drawStringSafe(centerBlock(min(110, hintWidth)), 55, 
+                      hint, u8g2_font_5x7_tf, 110);
+    }
 }
 
 // ==================== ЭКРАН НАЛИВА ====================
@@ -421,52 +403,38 @@ void Display::drawIdleScreen(bool kettlePresent, float waterVolume, bool powerRe
  */
 void Display::drawFillingScreen(float currentWater, float targetWaterVolume,
                                 float fillStartVolume, bool powerRelayState) {
-  // Рисуем значки
-  drawPowerIcon(powerRelayState);
-  drawWiFiIcon();
+    drawPowerIcon(powerRelayState);
+    drawWiFiIcon();
 
-  // Статус процесса
-  String statusText = "НАЛИВ...";
-  drawTextBetweenIcons(0, statusText, powerRelayState, u8g2_font_fub14_tf);
+    String statusText = "НАЛИВ...";
+    drawTextBetweenIcons(0, statusText, powerRelayState, u8g2_font_fub14_tf);
 
-  // Отображение прогресса: текущие кружки -> целевые кружки
-  int currentCups = mlToCups(currentWater);
-  int targetCups = mlToCups(targetWaterVolume);
-  String cupsStr = String(currentCups) + " -> " + String(targetCups);
+    int currentCups = mlToCups(currentWater);
+    int targetCups = mlToCups(targetWaterVolume);
+    String cupsStr = String(currentCups) + " -> " + String(targetCups);
 
-  oled.setFont(u8g2_font_fub14_tf);
-  int cupsWidth = oled.getStrWidth(cupsStr.c_str());
-  int totalWidth = cupsWidth + 20 + 4;
-  int startX = (128 - totalWidth) / 2;
-  int textBaselineY = 24;
-  int iconY = textBaselineY + 1;
+    int blockWidth = calculateCupsBlockWidth(cupsStr, u8g2_font_fub14_tf);
+    int startX = centerBlock(blockWidth);
+    
+    drawCupsWithIcon(startX, 24, cupsStr, u8g2_font_fub14_tf);
 
-  oled.setCursor(startX, textBaselineY);
-  oled.print(cupsStr);
-  oled.drawXBMP(startX + cupsWidth + 4, iconY, 20, 20, cup_20x20);
+    int progress = 0;
+    if (targetWaterVolume > fillStartVolume) {
+        progress = map(constrain(currentWater, fillStartVolume, targetWaterVolume),
+                       fillStartVolume, targetWaterVolume, 0, 100);
+        progress = constrain(progress, 0, 100);
+    }
 
-  // Прогресс-бар
-  int progress = 0;
-  if (targetWaterVolume > fillStartVolume) {
-    progress = map(constrain(currentWater, fillStartVolume, targetWaterVolume),
-                   fillStartVolume, targetWaterVolume, 0, 100);
-    progress = constrain(progress, 0, 100);
-  }
+    drawProgressBar(14, 48, 65, 10, progress);
 
-  drawProgressBar(14, 48, 65, 10, progress);
+    oled.setFont(u8g2_font_fub14_tf);
+    String percentStr = String(progress) + "%";
+    oled.setCursor(85, 44);
+    oled.print(percentStr);
 
-  // Отображение процентов
-  oled.setFont(u8g2_font_fub14_tf);
-  String percentStr = String(progress) + "%";
-  oled.setCursor(85, 44);
-  oled.print(percentStr);
-
-  // Подсказка для экстренной остановки
-  oled.setFont(u8g2_font_5x7_tf);
-  String stopHint = "Удерживайте для остановки";
-  int stopWidth = oled.getStrWidth(stopHint.c_str());
-  oled.setCursor(128 - stopWidth - 2, 58);
-  oled.print(stopHint);
+    String stopHint = "Удерживайте для остановки";
+    int stopWidth = oled.getStrWidth(stopHint.c_str());
+    drawStringSafe(128 - stopWidth - 2, 58, stopHint, u8g2_font_5x7_tf, stopWidth);
 }
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ОТРИСОВКИ ====================
@@ -599,103 +567,123 @@ void Display::drawTextBetweenIcons(int y, const String& text, bool powerIconVisi
  * Вызывается из основного loop() для обработки таймеров
  */
 void Display::updateWaiting(StateMachine* sm) {
-  if (waitState == WAIT_NONE) return;  // Нет активного ожидания
-  
-  unsigned long now = millis();
-  
-  // Проверяем, истекло ли время ожидания
-  if ((long)(now - waitStartTime) >= (long)waitDuration) {
-    // Время истекло - выполняем действие в зависимости от состояния
-    switch (waitState) {
-      case WAIT_RESET_MESSAGE:
-        // После сообщения о сбросе ничего не делаем
-        // Устройство уже перезагружается
-        break;
-        
-      case WAIT_CALIB_SUCCESS:
-        // После успешной калибровки - возвращаемся в IDLE
-        calibrationSuccess = false;
-        if (sm) sm->toIdle();
-        break;
-        
-      case WAIT_CALIB_ERROR:
-        // После ошибки калибровки - остаемся на том же шаге
-        // Состояние уже обработано в CalibrationState
-        break;
-        
-      default:
-        break;
+    if (waitState == WAIT_NONE) return;
+
+    unsigned long now = millis();
+
+    if ((long)(now - waitStartTime) >= (long)waitDuration) {
+        switch (waitState) {
+            case WAIT_RESET_MESSAGE:
+                break;
+            case WAIT_CALIB_SUCCESS:
+                calibrationSuccess = false;
+                // Добавлена проверка указателя
+                if (sm != nullptr) {
+                    sm->toIdle();
+                }
+                break;
+            case WAIT_CALIB_ERROR:
+                break;
+            default:
+                break;
+        }
+
+        waitState = WAIT_NONE;
     }
-    
-    waitState = WAIT_NONE;  // Сбрасываем состояние ожидания
-  }
 }
 
 /**
  * Показать сообщение о сбросе с неблокирующим ожиданием
  */
 void Display::showResetMessageNonBlocking(bool isFullReset, StateMachine* sm) {
-  // Отрисовываем сообщение
-  oled.clearBuffer();
-  oled.setFont(u8g2_font_fub14_tf);
-  
-  if (isFullReset) {
-    drawCenteredText(15, "ПОЛНЫЙ", u8g2_font_fub14_tf);
-    drawCenteredText(35, "СБРОС", u8g2_font_fub14_tf);
-    oled.setFont(u8g2_font_6x10_tf);
-    drawCenteredText(50, "WiFi и калибровка удалены", u8g2_font_6x10_tf);
-  } else {
-    drawCenteredText(20, "СБРОС", u8g2_font_fub14_tf);
-    drawCenteredText(40, "КАЛИБРОВКИ", u8g2_font_fub14_tf);
-    oled.setFont(u8g2_font_6x10_tf);
-    drawCenteredText(55, "Настройки WiFi сохранены", u8g2_font_6x10_tf);
-  }
-  
-  oled.sendBuffer();
-  
-  // Устанавливаем неблокирующее ожидание
-  waitState = WAIT_RESET_MESSAGE;
-  waitStartTime = millis();
-  waitDuration = 2000;  // 2 секунды
-  stateMachine = sm;
+    oled.clearBuffer();
+    oled.setFont(u8g2_font_fub14_tf);
+
+    if (isFullReset) {
+        drawCenteredText(15, "ПОЛНЫЙ", u8g2_font_fub14_tf);
+        drawCenteredText(35, "СБРОС", u8g2_font_fub14_tf);
+        oled.setFont(u8g2_font_6x10_tf);
+        drawCenteredText(50, "WiFi и калибровка удалены", u8g2_font_6x10_tf);
+    } else {
+        drawCenteredText(20, "СБРОС", u8g2_font_fub14_tf);
+        drawCenteredText(40, "КАЛИБРОВКИ", u8g2_font_fub14_tf);
+        oled.setFont(u8g2_font_6x10_tf);
+        drawCenteredText(55, "Настройки WiFi сохранены", u8g2_font_6x10_tf);
+    }
+
+    oled.sendBuffer();
+
+    stateMachine = sm;  // Сохраняем указатель (может быть nullptr)
+    waitState = WAIT_RESET_MESSAGE;
+    waitStartTime = millis();
+    waitDuration = 2000;
 }
 
 /**
  * Показать сообщение об успешной калибровке с неблокирующим ожиданием
  */
 void Display::showCalibrationSuccessNonBlocking(StateMachine* sm) {
-  // Показываем экран успеха
-  oled.setFont(u8g2_font_10x20_tf);
-  drawCenteredText(20, "КАЛИБРОВКА", u8g2_font_10x20_tf);
-  drawCenteredText(40, "ЗАВЕРШЕНА", u8g2_font_10x20_tf);
-  drawWiFiIcon();
-  oled.sendBuffer();
-  
-  // Устанавливаем неблокирующее ожидание
-  waitState = WAIT_CALIB_SUCCESS;
-  waitStartTime = millis();
-  waitDuration = 2000;  // 2 секунды
-  stateMachine = sm;
+    oled.setFont(u8g2_font_10x20_tf);
+    drawCenteredText(20, "КАЛИБРОВКА", u8g2_font_10x20_tf);
+    drawCenteredText(40, "ЗАВЕРШЕНА", u8g2_font_10x20_tf);
+    drawWiFiIcon();
+    oled.sendBuffer();
+
+    stateMachine = sm;  // Сохраняем указатель (может быть nullptr)
+    waitState = WAIT_CALIB_SUCCESS;
+    waitStartTime = millis();
+    waitDuration = 2000;
 }
 
 /**
  * Показать сообщение об ошибке калибровки с неблокирующим ожиданием
  */
 void Display::showCalibrationErrorNonBlocking(StateMachine* sm) {
-  // Показываем сообщение об ошибке
-  oled.clearBuffer();
-  oled.setFont(u8g2_font_10x20_tf);
-  drawCenteredText(20, "ОШИБКА", u8g2_font_10x20_tf);
-  drawCenteredText(40, "КАЛИБРОВКИ", u8g2_font_10x20_tf);
-  oled.setFont(u8g2_font_6x10_tf);
-  drawCenteredText(55, "Вес должен быть 100-5000г", u8g2_font_6x10_tf);
-  oled.sendBuffer();
-  
-  // Устанавливаем неблокирующее ожидание
-  waitState = WAIT_CALIB_ERROR;
-  waitStartTime = millis();
-  waitDuration = 2000;  // 2 секунды
-  stateMachine = sm;
+    oled.clearBuffer();
+    oled.setFont(u8g2_font_10x20_tf);
+    drawCenteredText(20, "ОШИБКА", u8g2_font_10x20_tf);
+    drawCenteredText(40, "КАЛИБРОВКИ", u8g2_font_10x20_tf);
+    oled.setFont(u8g2_font_6x10_tf);
+    drawCenteredText(55, "Вес должен быть 100-5000г", u8g2_font_6x10_tf);
+    oled.sendBuffer();
+
+    stateMachine = sm;  // Сохраняем указатель (может быть nullptr)
+    waitState = WAIT_CALIB_ERROR;
+    waitStartTime = millis();
+    waitDuration = 2000;
+}
+
+void Display::drawStringSafe(int x, int y, const String& text, const uint8_t* font, int maxWidth) {
+    oled.setFont(font);
+    int textWidth = oled.getStrWidth(text.c_str());
+    
+    if (textWidth <= maxWidth) {
+        oled.setCursor(x, y);
+        oled.print(text);
+    } else {
+        // Укорачиваем строку с троеточием
+        String shortText = text.substring(0, text.length() - 3) + "...";
+        oled.setCursor(x, y);
+        oled.print(shortText);
+    }
+}
+
+void Display::drawCupsWithIcon(int x, int y, const String& text, const uint8_t* font) {
+    oled.setFont(font);
+    int textWidth = oled.getStrWidth(text.c_str());
+    
+    oled.setCursor(x, y);
+    oled.print(text);
+    oled.drawXBMP(x + textWidth + 4, y + 1, 20, 20, cup_20x20);
+}
+
+int Display::calculateCupsBlockWidth(const String& text, const uint8_t* font) {
+    oled.setFont(font);
+    return oled.getStrWidth(text.c_str()) + 20 + 4;
+}
+
+int Display::centerBlock(int blockWidth) {
+    return (128 - blockWidth) / 2;
 }
 
 // ==================== СТАТИЧЕСКИЕ УТИЛИТЫ ====================

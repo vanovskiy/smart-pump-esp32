@@ -156,6 +156,11 @@ private:
   
   // Указатель на StateMachine для обратного вызова после ожидания
   StateMachine* stateMachine = nullptr;
+
+  void drawStringSafe(int x, int y, const String& text, const uint8_t* font, int maxWidth);
+  void drawCupsWithIcon(int x, int y, const String& text, const uint8_t* font);
+  int calculateCupsBlockWidth(const String& text, const uint8_t* font);
+  int centerBlock(int blockWidth);
   
 public:
   // ==================== КОНСТРУКТОР И ИНИЦИАЛИЗАЦИЯ ====================
@@ -252,24 +257,24 @@ public:
    */
   void updateWaiting(StateMachine* sm);
   
-  /**
-   * Показать сообщение о сбросе с неблокирующим ожиданием
-   * @param isFullReset - тип сброса
-   * @param sm - указатель на StateMachine
-   */
-  void showResetMessageNonBlocking(bool isFullReset, StateMachine* sm);
-  
-  /**
-   * Показать сообщение об успешной калибровке с неблокирующим ожиданием
-   * @param sm - указатель на StateMachine
-   */
-  void showCalibrationSuccessNonBlocking(StateMachine* sm);
-  
-  /**
-   * Показать сообщение об ошибке калибровки с неблокирующим ожиданием
-   * @param sm - указатель на StateMachine
-   */
-  void showCalibrationErrorNonBlocking(StateMachine* sm);
+/**
+ * Показать сообщение о сбросе с неблокирующим ожиданием
+ * @param isFullReset - тип сброса
+ * @param sm - указатель на StateMachine (может быть nullptr)
+ */
+void showResetMessageNonBlocking(bool isFullReset, StateMachine* sm);
+
+/**
+ * Показать сообщение об успешной калибровке с неблокирующим ожиданием
+ * @param sm - указатель на StateMachine (может быть nullptr)
+ */
+void showCalibrationSuccessNonBlocking(StateMachine* sm);
+
+/**
+ * Показать сообщение об ошибке калибровки с неблокирующим ожиданием
+ * @param sm - указатель на StateMachine (может быть nullptr)
+ */
+void showCalibrationErrorNonBlocking(StateMachine* sm);
 
 };
 

@@ -99,25 +99,34 @@ bool PumpController::canTogglePowerRelay() {
 
 // ==================== УПРАВЛЕНИЕ СЕРВОПРИВОДОМ ====================
 void PumpController::moveServoToKettle() {
-  if (currentServoState == SERVO_MOVING) return;
-  
-  servo.write(SERVO_KETTLE_ANGLE);
-  targetServoState = SERVO_OVER_KETTLE;
-  currentServoState = SERVO_MOVING;
-  servoMoveStartTime = millis();
+    if (!servo.attached()) {
+        servo.attach(PIN_SERVO);
+        delay(100);  // Небольшая задержка для стабилизации
+    }
+    
+    if (!isServoInPosition()) {
+        return;
+    }
+    
+    servo.write(SERVO_KETTLE_ANGLE);
+    targetServoState = SERVO_OVER_KETTLE;
+    currentServoState = SERVO_MOVING;
+    servoMoveStartTime = millis();
 }
 
 void PumpController::moveServoToIdle() {
-  if (currentServoState == SERVO_MOVING) return;
-  
-  servo.write(SERVO_IDLE_ANGLE);
-  targetServoState = SERVO_IDLE;
-  currentServoState = SERVO_MOVING;
-  servoMoveStartTime = millis();
+    if (!isServoInPosition()) {
+        return;
+    }
+    
+    servo.write(SERVO_IDLE_ANGLE);
+    targetServoState = SERVO_IDLE;
+    currentServoState = SERVO_MOVING;
+    servoMoveStartTime = millis();
 }
 
 bool PumpController::isServoInPosition() {
-  return currentServoState != SERVO_MOVING;
+    return currentServoState != SERVO_MOVING;
 }
 
 ServoState PumpController::getServoState() {
@@ -130,7 +139,7 @@ void PumpController::emergencyStop() {
   moveServoToIdle();
 }
 
-// ==================== НЕБЛОКИРУЮЩЕЕ УПРАВЛЕНИЕ ЗУММЕРОМ ====================
+// ==================== УПРАВЛЕНИЕ ЗУММЕРОМ ====================
 
 /**
  * Внутренний метод обновления состояния зуммера
@@ -235,27 +244,6 @@ void PumpController::errorBeepLoopNonBlocking() {
   if (buzzerState != BUZZER_ERROR_LOOP) {
     buzzerState = BUZZER_ERROR_LOOP;
     lastErrorLoopBeepTime = millis();
-  }
-}
-
-// ==================== СТАРЫЕ МЕТОДЫ (СОВМЕСТИМОСТЬ) ====================
-// Эти методы содержат delay() и помечены как устаревшие
-
-void PumpController::beepShort(int count) {
-  for (int i = 0; i < count; i++) {
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(BUZZER_FEEDBACK);
-    digitalWrite(PIN_BUZZER, LOW);
-    if (i < count - 1) delay(BUZZER_FEEDBACK * 2);
-  }
-}
-
-void PumpController::beepLong(int count) {
-  for (int i = 0; i < count; i++) {
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(BUZZER_FEEDBACK * 3);
-    digitalWrite(PIN_BUZZER, LOW);
-    if (i < count - 1) delay(BUZZER_FEEDBACK * 2);
   }
 }
 

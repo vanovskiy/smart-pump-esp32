@@ -330,6 +330,15 @@ public:
    * Вызывается из основного loop
    */
   void updateDisplayWaiting() { display.updateWaiting(this); }
+
+    // Деструктор
+    ~StateMachine() {
+        if (currentState) {
+            delete currentState;
+            currentState = nullptr;
+        }
+    }
+
 };
 
 #endif // Конец защиты от множественного включения

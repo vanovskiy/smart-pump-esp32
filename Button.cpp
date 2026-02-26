@@ -29,51 +29,40 @@ Button::Button(uint8_t buttonPin) {
 Выполняет опрос состояния кнопки, антидребезг и детекцию событий
 */
 void Button::tick() {
-    bool currentState = digitalRead(pin);  // Читаем текущее состояние пина
-    unsigned long now = millis();          // Текущее время в миллисекундах
+    bool currentState = digitalRead(pin);
+    unsigned long now = millis();
 
-    // ===== 1. АНТИДРЕБЕЗГ =====
-    // Если состояние изменилось - запоминаем время изменения
     if (currentState != lastState) {
         lastDebounceTime = now;
     }
 
-    // Если состояние стабильно дольше времени дребезга - считаем его валидным
     if ((now - lastDebounceTime) > DEBOUNCE_TIME) {
-        // Обрабатываем стабильное состояние
-        if (currentState == LOW) { 
-            // КНОПКА НАЖАТА (LOW, потому что INPUT_PULLUP)
+        if (currentState == LOW) {
             if (pressStartTime == 0) {
-                pressStartTime = now;          // Запоминаем время начала нажатия
-                isLongPressReported = false;    // Сбрасываем флаги для новой серии
+                pressStartTime = now;
+                isLongPressReported = false;
                 isVeryLongPressReported = false;
             }
-        } else { 
-            // КНОПКА ОТПУЩЕНА (HIGH)
+        } else {
             if (pressStartTime != 0) {
-                // Нажатие было завершено, теперь анализируем его длительность
                 unsigned long pressDuration = now - pressStartTime;
 
-                // Проверяем, не было ли это длительным нажатием
-                // Длительные нажатия обрабатываются отдельно через isLongPress/isVeryLongPress
                 if (pressDuration < LONG_PRESS_TIME) {
-                    // Короткое нажатие - увеличиваем счетчик кликов
                     clickCount++;
-                    lastClickTime = now;        // Запоминаем время этого клика
+                    lastClickTime = now;
                 }
-                pressStartTime = 0;              // Сбрасываем время начала нажатия
+                pressStartTime = 0;
             }
         }
     }
-    lastState = currentState;  // Обновляем последнее состояние для следующей итерации
+    lastState = currentState;
 
-    // ===== 2. ОБРАБОТКА ТАЙМАУТОВ ДЛЯ МУЛЬТИКЛИКОВ =====
-    // Если прошло достаточно времени после последнего клика, значит серия кликов завершена
-    // Значение clickCount остается для последующего считывания через методы isSingleClick и т.д.
+    // Обработка таймаута мультикликов с полным сбросом
     if (clickCount > 0 && (now - lastClickTime) > DOUBLE_CLICK_TIME) {
-        // Таймаут истек - серия кликов завершена
-        // Ничего не делаем, clickCount будет считан и сброшен через resetClicks()
-        // Это позволяет основному коду обработать мультиклик после паузы
+        clickCount = 0;
+        // Также сбрасываем флаги long press для чистоты
+        isLongPressReported = false;
+        isVeryLongPressReported = false;
     }
 }
 

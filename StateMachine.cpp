@@ -298,11 +298,16 @@ void StateMachine::emergencyStopFilling() {
 }
 
 void StateMachine::handleMqttCommand(int mode) {
+    // ===== ВАЛИДАЦИЯ 1: Проверка допустимости mode =====
+    if (mode < 1 || mode > 8) {
+        pump.beepShortNonBlocking(2);  // Два сигнала - ошибка
+        return;
+    }
     if (!currentState) return;
     
     Serial.printf("MQTT command mode: %d\n", mode);
     
-    // Команда СТОП (8) - работает в любом состоянии
+    // ===== ВАЛИДАЦИЯ 2: Команда СТОП (8) - работает всегда =====
     if (mode == CMD_STOP) {
         Serial.println("MQTT: STOP command");
         if (strcmp(currentState->getName(), "FILLING") == 0) {
@@ -313,14 +318,14 @@ void StateMachine::handleMqttCommand(int mode) {
         return;
     }
     
-    // Остальные команды работают только в IDLE
+    // ===== ВАЛИДАЦИЯ 3: Остальные команды только в IDLE =====
     if (strcmp(currentState->getName(), "IDLE") != 0) {
         Serial.println("MQTT: Not in IDLE state, ignoring command");
         pump.beepShortNonBlocking(2);
         return;
     }
     
-    // Проверяем наличие чайника
+    // ===== ВАЛИДАЦИЯ 4: Проверка наличия чайника =====
     if (!scale.isReady() || !scale.isKettlePresent()) {
         Serial.println("MQTT: Kettle not present");
         pump.beepShortNonBlocking(2);
@@ -333,6 +338,7 @@ void StateMachine::handleMqttCommand(int mode) {
     float targetWeight = scale.getEmptyWeight();
     float maxWeight = scale.getEmptyWeight() + FULL_WATER_LEVEL;
     
+    // ===== ВАЛИДАЦИЯ 5: Обработка конкретной команды =====
     switch (mode) {
         case CMD_ONE_CUP:
             Serial.println("MQTT: One cup / minimum mode");
@@ -379,21 +385,21 @@ void StateMachine::handleMqttCommand(int mode) {
             return;
     }
     
-    // Ограничиваем максимальным объемом
+    // ===== ВАЛИДАЦИЯ 6: Ограничение максимальным объемом =====
     if (targetWeight > maxWeight) {
         targetWeight = maxWeight;
     }
     
-    // Проверяем, есть ли смысл наливать
+    // ===== ВАЛИДАЦИЯ 7: Проверка, есть ли смысл наливать =====
     if (targetWeight <= scale.getCurrentWeight() + 10) {
         Serial.println("MQTT: Target already reached or exceeded");
         pump.beepShortNonBlocking(2);
         return;
     }
     
-    // Запускаем налив
+    // ===== ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - ЗАПУСКАЕМ НАЛИВ =====
     toFilling(targetWeight);
-    pump.beepShortNonBlocking(1);
+    pump.beepShortNonBlocking(1); // Один сигнал - команда принята
 }
 
 void StateMachine::transitionTo(State* newState) {
