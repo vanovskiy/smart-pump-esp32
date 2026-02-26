@@ -324,6 +324,12 @@ public:
     
     /** Экстренно останавливает налив по MQTT команде */
     void emergencyStopFilling();
+
+      /**
+   * Обновляет ожидания дисплея
+   * Вызывается из основного loop
+   */
+  void updateDisplayWaiting() { display.updateWaiting(this); }
 };
 
 #endif // Конец защиты от множественного включения

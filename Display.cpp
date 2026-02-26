@@ -4,6 +4,7 @@
 
 #include "Display.h"
 #include <WiFi.h>
+#include "StateMachine.h"
 
 // ==================== ИКОНКИ (ДАННЫЕ) ====================
 // Все иконки хранятся в PROGMEM для экономии оперативной памяти
@@ -100,21 +101,30 @@ void Display::begin() {
 void Display::update(SystemState state, ErrorType error, bool kettlePresent,
                      float currentWeight, float targetWeight, float fillStartVolume,
                      bool powerRelayState, float emptyWeight) {
-  oled.clearBuffer();  // Очищаем внутренний буфер перед отрисовкой
+  
+  // Если есть активное ожидание - не обновляем обычные экраны
+  if (waitState != WAIT_NONE) {
+    return;
+  }
+  
+  oled.clearBuffer();
 
-  // Проверка на специальные режимы (калибровка, успех калибровки)
+  // Проверка на экран успешной калибровки
   if (calibrationSuccess) {
-    drawCalibrationSuccessScreen();        // Экран успешной калибровки
+    // Вместо прямого вызова drawCalibrationSuccessScreen,
+    // показываем сообщение через неблокирующий метод
+    if (stateMachine) {
+      showCalibrationSuccessNonBlocking(stateMachine);
+    }
   } else if (calibrationInProgress) {
-    drawCalibrationScreen(currentWeight);  // Экран процесса калибровки
+    drawCalibrationScreen(currentWeight);
   } else {
-    // Обычные режимы работы
     switch (state) {
       case ST_INIT:
-        drawInitScreen();                  // Экран загрузки
+        drawInitScreen();
         break;
       case ST_ERROR:
-        drawErrorScreen(error);            // Экран ошибки
+        drawErrorScreen(error);
         break;
       case ST_IDLE:
         drawIdleScreen(kettlePresent, getWaterVolume(currentWeight, emptyWeight), powerRelayState);
@@ -125,12 +135,12 @@ void Display::update(SystemState state, ErrorType error, bool kettlePresent,
                           fillStartVolume, powerRelayState);
         break;
       case ST_CALIBRATION:
-        drawCalibrationScreen(currentWeight);  // Экран калибровки
+        drawCalibrationScreen(currentWeight);
         break;
     }
   }
 
-  oled.sendBuffer();  // Отправляем буфер на физический дисплей
+  oled.sendBuffer();
 }
 
 // ==================== ЭКРАН ТОЧКИ ДОСТУПА ====================
@@ -202,7 +212,7 @@ void Display::showResetCountdown(int seconds, bool isFullReset) {
  * 
  * @param isFullReset - true: полный сброс, false: только калибровка
  */
-void Display::showResetMessage(bool isFullReset) {
+/* Display::showResetMessage(bool isFullReset) {
   oled.clearBuffer();
 
   oled.setFont(u8g2_font_fub14_tf);
@@ -224,7 +234,7 @@ void Display::showResetMessage(bool isFullReset) {
   oled.sendBuffer();
   delay(2000);  // Задержка, чтобы пользователь успел прочитать
 }
-
+*/
 // ==================== ЭКРАН КАЛИБРОВКИ ====================
 
 /**
@@ -277,13 +287,13 @@ void Display::drawCalibrationScreen(float currentWeight) {
  * Экран, показываемый после успешного завершения калибровки
  * Отображается 2 секунды, затем переход в основной режим
  */
-void Display::drawCalibrationSuccessScreen() {
+/*void Display::drawCalibrationSuccessScreen() {
   oled.setFont(u8g2_font_10x20_tf);
   drawCenteredText(20, "КАЛИБРОВКА", u8g2_font_10x20_tf);
   drawCenteredText(40, "ЗАВЕРШЕНА", u8g2_font_10x20_tf);
 
   drawWiFiIcon();
-}
+}*/
 
 // ==================== ЭКРАН ИНИЦИАЛИЗАЦИИ ====================
 
@@ -580,6 +590,112 @@ void Display::drawTextBetweenIcons(int y, const String& text, bool powerIconVisi
   }
 
   oled.print(text);
+}
+
+// ==================== НЕБЛОКИРУЮЩИЕ ОЖИДАНИЯ ====================
+
+/**
+ * Обновление состояния ожидания
+ * Вызывается из основного loop() для обработки таймеров
+ */
+void Display::updateWaiting(StateMachine* sm) {
+  if (waitState == WAIT_NONE) return;  // Нет активного ожидания
+  
+  unsigned long now = millis();
+  
+  // Проверяем, истекло ли время ожидания
+  if ((long)(now - waitStartTime) >= (long)waitDuration) {
+    // Время истекло - выполняем действие в зависимости от состояния
+    switch (waitState) {
+      case WAIT_RESET_MESSAGE:
+        // После сообщения о сбросе ничего не делаем
+        // Устройство уже перезагружается
+        break;
+        
+      case WAIT_CALIB_SUCCESS:
+        // После успешной калибровки - возвращаемся в IDLE
+        calibrationSuccess = false;
+        if (sm) sm->toIdle();
+        break;
+        
+      case WAIT_CALIB_ERROR:
+        // После ошибки калибровки - остаемся на том же шаге
+        // Состояние уже обработано в CalibrationState
+        break;
+        
+      default:
+        break;
+    }
+    
+    waitState = WAIT_NONE;  // Сбрасываем состояние ожидания
+  }
+}
+
+/**
+ * Показать сообщение о сбросе с неблокирующим ожиданием
+ */
+void Display::showResetMessageNonBlocking(bool isFullReset, StateMachine* sm) {
+  // Отрисовываем сообщение
+  oled.clearBuffer();
+  oled.setFont(u8g2_font_fub14_tf);
+  
+  if (isFullReset) {
+    drawCenteredText(15, "ПОЛНЫЙ", u8g2_font_fub14_tf);
+    drawCenteredText(35, "СБРОС", u8g2_font_fub14_tf);
+    oled.setFont(u8g2_font_6x10_tf);
+    drawCenteredText(50, "WiFi и калибровка удалены", u8g2_font_6x10_tf);
+  } else {
+    drawCenteredText(20, "СБРОС", u8g2_font_fub14_tf);
+    drawCenteredText(40, "КАЛИБРОВКИ", u8g2_font_fub14_tf);
+    oled.setFont(u8g2_font_6x10_tf);
+    drawCenteredText(55, "Настройки WiFi сохранены", u8g2_font_6x10_tf);
+  }
+  
+  oled.sendBuffer();
+  
+  // Устанавливаем неблокирующее ожидание
+  waitState = WAIT_RESET_MESSAGE;
+  waitStartTime = millis();
+  waitDuration = 2000;  // 2 секунды
+  stateMachine = sm;
+}
+
+/**
+ * Показать сообщение об успешной калибровке с неблокирующим ожиданием
+ */
+void Display::showCalibrationSuccessNonBlocking(StateMachine* sm) {
+  // Показываем экран успеха
+  oled.setFont(u8g2_font_10x20_tf);
+  drawCenteredText(20, "КАЛИБРОВКА", u8g2_font_10x20_tf);
+  drawCenteredText(40, "ЗАВЕРШЕНА", u8g2_font_10x20_tf);
+  drawWiFiIcon();
+  oled.sendBuffer();
+  
+  // Устанавливаем неблокирующее ожидание
+  waitState = WAIT_CALIB_SUCCESS;
+  waitStartTime = millis();
+  waitDuration = 2000;  // 2 секунды
+  stateMachine = sm;
+}
+
+/**
+ * Показать сообщение об ошибке калибровки с неблокирующим ожиданием
+ */
+void Display::showCalibrationErrorNonBlocking(StateMachine* sm) {
+  // Показываем сообщение об ошибке
+  oled.clearBuffer();
+  oled.setFont(u8g2_font_10x20_tf);
+  drawCenteredText(20, "ОШИБКА", u8g2_font_10x20_tf);
+  drawCenteredText(40, "КАЛИБРОВКИ", u8g2_font_10x20_tf);
+  oled.setFont(u8g2_font_6x10_tf);
+  drawCenteredText(55, "Вес должен быть 100-5000г", u8g2_font_6x10_tf);
+  oled.sendBuffer();
+  
+  // Устанавливаем неблокирующее ожидание
+  waitState = WAIT_CALIB_ERROR;
+  waitStartTime = millis();
+  waitDuration = 2000;  // 2 секунды
+  stateMachine = sm;
 }
 
 // ==================== СТАТИЧЕСКИЕ УТИЛИТЫ ====================

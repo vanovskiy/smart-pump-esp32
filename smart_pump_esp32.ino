@@ -1,57 +1,54 @@
 // файл: smart_pump_esp32.ino
 // Главный файл проекта умной помпы на ESP32
-// Отвечает за инициализацию всех модулей и главный цикл программы
+// Версия с неблокирующими задержками (без delay в loop)
 
-// Подключение всех необходимых заголовочных файлов
-#include "config.h"           // Основные настройки и конфигурация (пины, константы)
-#include "Button.h"           // Класс для работы с кнопкой (обработка нажатий, дребезга)
-#include "Scale.h"            // Класс для работы с тензодатчиком HX711 (измерение веса)
-#include "PumpController.h"    // Управление помпой, реле, сервоприводом и зуммером
-#include "Display.h"          // Управление OLED-дисплеем (отрисовка экранов)
-#include "StateMachine.h"     // Конечный автомат (состояния IDLE, FILLING, ERROR, CALIBRATION)
-#include "WiFiManager.h"      // Управление WiFi подключением и веб-порталом настройки
-#include "MQTTManager.h"      // Управление MQTT подключением к Dealgate
-#include <EEPROM.h>           // Библиотека для работы с энергонезависимой памятью
+#include "config.h"
+#include "Button.h"
+#include "Scale.h"
+#include "PumpController.h"
+#include "Display.h"
+#include "StateMachine.h"
+#include "WiFiManager.h"
+#include "MQTTManager.h"
+#include <EEPROM.h>
 
 // ==================== ГЛОБАЛЬНЫЕ ОБЪЕКТЫ ====================
-// Создаем экземпляры всех классов для использования во всей программе
-Button button(PIN_BUTTON);                    // Объект кнопки на пине 27
-Scale scale;                                   // Объект весов (HX711)
-PumpController pump;                           // Объект управления помпой
-Display display;                               // Объект дисплея
-StateMachine* stateMachine = nullptr;           // Указатель на конечный автомат (создается в setup)
-WiFiManager wifiManager;                        // Объект управления WiFi
-MQTTManager* mqttManager = nullptr;             // Указатель на MQTT менеджер (создается в setup)
+Button button(PIN_BUTTON);
+Scale scale;
+PumpController pump;
+Display display;
+StateMachine* stateMachine = nullptr;
+WiFiManager wifiManager;
+MQTTManager* mqttManager = nullptr;
 
 // ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
-// Переменные для отслеживания времени нажатия кнопки и обратного отсчета
-unsigned long pressStartTime = 0;    // Время начала нажатия кнопки (в миллисекундах)
-bool countdownActive = false;         // Флаг: активен ли режим обратного отсчета
-int lastDisplayedSeconds = -1;        // Последнее отображенное значение секунд (для избежания лишних обновлений)
-bool wifiResetPhase = false;           // Флаг: находимся ли в фазе сброса WiFi (true) или калибровки (false)
+unsigned long pressStartTime = 0;
+bool countdownActive = false;
+int lastDisplayedSeconds = -1;
+bool wifiResetPhase = false;
 
-// Переменные для отслеживания состояния налива (используются для обновления дисплея)
-float currentFillTarget = 0;    // Целевой вес при наливе
-float currentFillStart = 0;      // Начальный вес при наливе
+// Переменные для отслеживания состояния налива
+float currentFillTarget = 0;
+float currentFillStart = 0;
+
+// ==================== УПРАВЛЕНИЕ ЧАСТОТОЙ LOOP ====================
+unsigned long lastLoopTime = 0;
+const unsigned long LOOP_INTERVAL = LOOP_DELAY; // 100 мс из config.h
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
 /**
  * Генерирует уникальный идентификатор устройства на основе MAC-адреса ESP32
- * Используется как client ID для MQTT подключения
- * Формат: smartpump-XXXXXXXX (где X - последние 8 символов MAC)
  */
 String generateDeviceId() {
-    uint64_t chipid = ESP.getEfuseMac();           // Получаем MAC-адрес из памяти чипа
+    uint64_t chipid = ESP.getEfuseMac();
     char deviceId[24];
     snprintf(deviceId, sizeof(deviceId), "smartpump-%08X", (uint32_t)chipid);
     return String(deviceId);
 }
 
 /**
- * Callback-функция для событий WiFi
- * Вызывается WiFiManager при изменении состояния подключения
- * Обновляет статус WiFi на дисплее
+ * Callback для событий WiFi
  */
 void onWiFiEvent(WiFiState state) {
     Serial.printf("WiFi state changed to: %d\n", state);
@@ -59,9 +56,7 @@ void onWiFiEvent(WiFiState state) {
 }
 
 /**
- * Callback-функция для MQTT команд
- * Вызывается MQTTManager при получении команды из облака
- * Передает команду в конечный автомат для обработки
+ * Callback для MQTT команд
  */
 void onMqttCommand(int mode) {
     if (stateMachine) {
@@ -70,80 +65,62 @@ void onMqttCommand(int mode) {
 }
 
 /**
- * Публикует обновления состояния в MQTT
- * Вызывается каждый цикл loop(), но фактическая отправка происходит
- * только при изменении состояний (логика внутри publishWaterState/publishKettleState)
+ * Публикация MQTT обновлений
  */
 void publishMqttUpdates() {
-    // Проверяем, что MQTT менеджер существует, подключен и WiFi есть
     if (!mqttManager || !mqttManager->isConnected() || !wifiManager.isConnected()) {
         return;
     }
     
-    // Публикуем уровень воды (публикует только при изменении)
     if (!mqttManager->publishWaterState()) {
         Serial.println("WARNING: Failed to publish water state to Dealgate");
     }
     
-    // Публикуем наличие чайника (публикует только при изменении)
     if (!mqttManager->publishKettleState()) {
         Serial.println("WARNING: Failed to publish kettle presence to Dealgate");
     }
 }
 
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
-/**
- * Функция setup выполняется один раз при старте микроконтроллера
- * Инициализирует все компоненты системы в правильном порядке
- */
 void setup() {
-    // Инициализация последовательного порта для отладки
     Serial.begin(115200);
-    delay(100);
+    delay(100);  // В setup допустимо
     Serial.println("Smart Pump Starting...");
 
-    // Инициализация EEPROM (энергонезависимая память для хранения калибровки)
     EEPROM.begin(EEPROM_SIZE);
 
-    // ===== Инициализация дисплея =====
+    // Инициализация дисплея
     display.begin();
-    display.setWiFiStatus(false, false);           // Начальный статус: WiFi не настроен, не подключен
-    display.update(ST_INIT, ERR_NONE, false, 0, 0, 0, false, 0);  // Показываем экран загрузки
+    display.setWiFiStatus(false, false);
+    display.update(ST_INIT, ERR_NONE, false, 0, 0, 0, false, 0);
 
-    // ===== Инициализация WiFi =====
-    wifiManager.begin();                            // Запускаем WiFi менеджер
-    wifiManager.setEventCallback(onWiFiEvent);      // Устанавливаем callback для событий
+    // Инициализация WiFi
+    wifiManager.begin();
+    wifiManager.setEventCallback(onWiFiEvent);
 
-    // ===== Инициализация весов =====
-    if (!scale.begin()) {                           // Если датчик HX711 не отвечает
+    // Инициализация весов
+    if (!scale.begin()) {
         Serial.println("HX711 not found");
         display.update(ST_ERROR, ERR_HX711_TIMEOUT, false, 0, 0, 0, false, 0);
         stateMachine = new StateMachine(scale, pump, display);
-        stateMachine->toError(ERR_HX711_TIMEOUT);    // Переходим в состояние ошибки
+        stateMachine->toError(ERR_HX711_TIMEOUT);
     } else {
-        // Загружаем калибровку из EEPROM
         scale.loadCalibrationFromEEPROM(EEPROM_CALIB_ADDR);
-        
-        // Создаем конечный автомат
         stateMachine = new StateMachine(scale, pump, display);
         
-        // Проверяем, откалиброваны ли весы
         if (!scale.isReady()) {
-            // Если нет калибровки - переходим в режим калибровки
             display.setCalibrationMode(true);
             display.update(ST_CALIBRATION, ERR_NONE, false, scale.getCurrentWeight(), 0, 0, false, 0);
             stateMachine->toCalibration();
         } else {
-            // Если калибровка есть - переходим в режим ожидания
             stateMachine->toIdle();
         }
     }
 
-    // ===== Инициализация помпы, серво и зуммера =====
     pump.begin();
-    pump.beepShort(1);  // Один короткий сигнал об успешном запуске
+    pump.beepShortNonBlocking(1);  // Используем неблокирующий зуммер
 
-    // ===== Вывод информации об устройстве =====
+    // Генерируем уникальный deviceId
     String deviceId = generateDeviceId();
     Serial.println("=== Device Information ===");
     Serial.println("Device ID: " + deviceId);
@@ -151,172 +128,173 @@ void setup() {
     Serial.println("Chip ID: " + wifiManager.getChipId());
     Serial.println("===========================");
 
-    // ===== Инициализация MQTT =====
+    // Инициализация MQTT
     mqttManager = new MQTTManager(scale, *stateMachine, wifiManager);
-    mqttManager->begin();                           // Загружает credentials и пытается подключиться
-    mqttManager->setCommandCallback(onMqttCommand); // Устанавливаем callback для MQTT команд
+    mqttManager->begin();
+    mqttManager->setCommandCallback(onMqttCommand);
 
     Serial.println("Setup complete.");
 }
 
-// ==================== ГЛАВНЫЙ ЦИКЛ ====================
-/**
- * Функция loop выполняется бесконечно после setup
- * Содержит всю логику работы системы в реальном времени
- */
+// ==================== ГЛАВНЫЙ ЦИКЛ (НЕБЛОКИРУЮЩИЙ) ====================
 void loop() {
+    unsigned long now = millis();
+    
+    // ===== УПРАВЛЕНИЕ ЧАСТОТОЙ ВЫПОЛНЕНИЯ =====
+        if ((long)(now - lastLoopTime) < (long)LOOP_INTERVAL) {
+           delay(1);
+            return;
+        }
+    lastLoopTime = now;
+    
     // ===== 1. ОБНОВЛЕНИЕ WiFi =====
-    wifiManager.loop();  // Поддерживает подключение, обрабатывает DNS и HTTP запросы
+    wifiManager.loop();
     
     // ===== 2. ОБНОВЛЕНИЕ MQTT (только если WiFi подключен) =====
     if (wifiManager.isConnected()) {
         if (mqttManager) {
-            mqttManager->loop();  // Поддерживает MQTT соединение, обрабатывает входящие сообщения
+            mqttManager->loop();
         }
     }
     
     // ===== 3. ОБНОВЛЕНИЕ СОСТОЯНИЯ КНОПКИ =====
-    button.tick();  // Должен вызываться каждый цикл для обработки дребезга и мультикликов
+    button.tick();
     
-    // ===== ОБНОВЛЕНИЕ СТАТУСА ДЛЯ ДИСПЛЕЯ =====
-    // Раз в секунду обновляем индикацию WiFi на дисплее
+    // ===== 4. ОБНОВЛЕНИЕ СТАТУСА ДЛЯ ДИСПЛЕЯ =====
     static unsigned long lastWiFiStatusUpdate = 0;
-    if (millis() - lastWiFiStatusUpdate > 1000) {
-        lastWiFiStatusUpdate = millis();
+    if (now - lastWiFiStatusUpdate > 1000) {
+        lastWiFiStatusUpdate = now;
         display.setWiFiStatus(wifiManager.isConfigured(), wifiManager.isConnected());
     }
     
-    // ===== ОБРАБОТКА СБРОСА С ОБРАТНЫМ ОТСЧЕТОМ =====
-    // Логика для VERY_LONG_PRESS (удержание кнопки более 5 секунд)
-    // Показывает обратный отсчет на дисплее: 5-10 сек для сброса калибровки, 10-15 сек для полного сброса
+    // ===== 5. ОБРАБОТКА СБРОСА С ОБРАТНЫМ ОТСЧЕТОМ =====
     if (button.isPressed()) {
-        // Начало нажатия
         if (pressStartTime == 0) {
-            pressStartTime = millis();
+            pressStartTime = now;
             countdownActive = true;
             lastDisplayedSeconds = -1;
             wifiResetPhase = false;
         }
         
-        unsigned long pressDuration = millis() - pressStartTime;
+        unsigned long pressDuration = now - pressStartTime;
         
-        // Если нажатие длится более 5 секунд - начинаем обратный отсчет
         if (pressDuration >= 5000) {
             if (pressDuration < 10000) {
-                // Фаза 5-10 секунд: подготовка к сбросу калибровки
                 int secondsLeft = 10 - (pressDuration / 1000);
                 if (secondsLeft < 0) secondsLeft = 0;
                 if (secondsLeft != lastDisplayedSeconds || wifiResetPhase) {
                     lastDisplayedSeconds = secondsLeft;
-                    wifiResetPhase = false;  // Это фаза калибровки
+                    wifiResetPhase = false;
                     display.showResetCountdown(secondsLeft, false);
                 }
             } else {
-                // Фаза 10-15 секунд: подготовка к полному сбросу (WiFi + калибровка)
                 int secondsLeft = 15 - (pressDuration / 1000);
                 if (secondsLeft < 0) secondsLeft = 0;
                 if (secondsLeft != lastDisplayedSeconds || !wifiResetPhase) {
                     lastDisplayedSeconds = secondsLeft;
-                    wifiResetPhase = true;   // Это фаза полного сброса
+                    wifiResetPhase = true;
                     display.showResetCountdown(secondsLeft, true);
                 }
             }
         }
     } else {
-        // Кнопка отпущена - проверяем, было ли длительное нажатие
         if (countdownActive && pressStartTime > 0) {
-            unsigned long pressDuration = millis() - pressStartTime;
+            unsigned long pressDuration = now - pressStartTime;
             
-            // Если удержание более 15 секунд - ПОЛНЫЙ СБРОС (WiFi + калибровка)
             if (pressDuration >= RESET_FULL_TIME) {
                 Serial.println("VERY LONG PRESS (>15s): Factory reset");
-                pump.beepLong(3);                  // 3 длинных сигнала
-                display.showResetMessage(true);     // Показываем сообщение о полном сбросе
+                pump.beepLongNonBlocking(3);  // Неблокирующий зуммер
                 
-                scale.resetCalibration();           // Сбрасываем калибровку весов
+                // Используем неблокирующее отображение сообщения
+                display.showResetMessageNonBlocking(true, stateMachine);
                 
-                // Отключаем и удаляем MQTT менеджер
+                // Сброс калибровки
+                scale.resetCalibration();
+                
+                // Отключаем MQTT
                 if (mqttManager) {
                     mqttManager->disconnect();
                     delete mqttManager;
                     mqttManager = nullptr;
                 }
                 
-                wifiManager.resetSettings();        // Сбрасываем настройки WiFi и MQTT
+                // Сброс WiFi
+                wifiManager.resetSettings();
                 
-                delay(3000);
-                ESP.restart();                      // Перезагружаем ESP32
+                // Неблокирующее ожидание перед перезагрузкой
+                // Просто выходим, остальное сделает система
+                Serial.println("System will restart...");
+                delay(100);  // Короткая задержка для отправки логов
+                ESP.restart();
                 
-            // Если удержание 10-15 секунд - СБРОС КАЛИБРОВКИ
             } else if (pressDuration >= RESET_CALIB_TIME) {
                 Serial.println("LONG PRESS (10-15s): Calibration reset only");
-                pump.beepLong(2);                   // 2 длинных сигнала
-                display.showResetMessage(false);     // Показываем сообщение о сбросе калибровки
+                pump.beepLongNonBlocking(2);  // Неблокирующий зуммер
                 
-                scale.resetCalibration();            // Только сброс калибровки, WiFi не трогаем
+                // Используем неблокирующее отображение сообщения
+                display.showResetMessageNonBlocking(false, stateMachine);
                 
-                delay(2000);
-                ESP.restart();                       // Перезагружаем ESP32
+                scale.resetCalibration();
+                
+                Serial.println("System will restart...");
+                delay(100);  // Короткая задержка для отправки логов
+                ESP.restart();
             }
         }
         
-        // Сбрасываем переменные состояния кнопки
         pressStartTime = 0;
         countdownActive = false;
         lastDisplayedSeconds = -1;
         wifiResetPhase = false;
     }
     
-    // ===== ОБРАБОТКА LONG_PRESS ДЛЯ КОНФИГУРАЦИИ WIFI =====
-    // Если WiFi не настроен и пользователь держит кнопку 3 секунды - запускаем портал настройки
+    // ===== 6. ОБРАБОТКА LONG_PRESS ДЛЯ КОНФИГУРАЦИИ WIFI =====
     static bool configModeActivated = false;
     if (button.isLongPress() && !configModeActivated) {
         if (!wifiManager.isConfigured()) {
             Serial.println("Long press: Start WiFi config portal");
-            // Обновляем дисплей перед запуском портала
             display.update(ST_IDLE, ERR_NONE, scale.isKettlePresent(), 
                           scale.getCurrentWeight(), 0, 0, 
                           pump.isPowerRelayOn(), scale.getEmptyWeight());
-            pump.beepShort(2);                       // 2 коротких сигнала
-            wifiManager.startConfigPortal();          // Запускаем точку доступа для настройки
+            pump.beepShortNonBlocking(2);  // Неблокирующий зуммер
+            wifiManager.startConfigPortal();
             configModeActivated = true;
         }
     }
     
-    // Сбрасываем флаг, когда кнопка отпущена
     if (!button.isPressed()) {
         configModeActivated = false;
     }
     
-    // ===== ОБНОВЛЕНИЕ КОНТРОЛЛЕРОВ =====
-    pump.update();  // Обновляет состояние сервопривода (проверяет, закончилось ли движение)
+    // ===== 7. ОБНОВЛЕНИЕ КОНТРОЛЛЕРОВ =====
+    pump.update();  // Обновляет серво и зуммер
     
-    // ===== ОБНОВЛЕНИЕ КОНЕЧНОГО АВТОМАТА =====
+    // ===== 8. ОБНОВЛЕНИЕ КОНЕЧНОГО АВТОМАТА =====
     if (stateMachine != nullptr) {
-        stateMachine->update();                 // Обновляем текущее состояние
-        stateMachine->handleButton(button);     // Передаем события кнопки в конечный автомат
+        stateMachine->update();
+        stateMachine->handleButton(button);
         
-        // Если мы в состоянии налива - сохраняем целевые значения для дисплея
         if (stateMachine->getCurrentStateEnum() == ST_FILLING) {
             currentFillTarget = stateMachine->getFillTarget();
             currentFillStart = stateMachine->getFillStart();
         }
+        
+        // Обновляем ожидания дисплея
+        stateMachine->updateDisplayWaiting();
     }
     
-    // ===== ОТПРАВКА СТАТУСА В MQTT =====
+    // ===== 9. ОТПРАВКА СТАТУСА В MQTT =====
     publishMqttUpdates();
     
-    // ===== ПРОВЕРКА ЗДОРОВЬЯ MQTT =====
-    // Раз в минуту проверяем состояние MQTT соединения и логируем статистику
+    // ===== 10. ПРОВЕРКА ЗДОРОВЬЯ MQTT =====
     static unsigned long lastMqttHealthCheck = 0;
-    if (mqttManager && millis() - lastMqttHealthCheck > 60000) {
-        lastMqttHealthCheck = millis();
+    if (mqttManager && now - lastMqttHealthCheck > 60000) {
+        lastMqttHealthCheck = now;
         
         if (!mqttManager->isConnected() && wifiManager.isConnected()) {
             Serial.println("MQTT health check: not connected, attempting reconnect");
-            mqttManager->reconnect();           // Пытаемся переподключиться
+            mqttManager->reconnect();
         } else if (mqttManager->isConnected()) {
-            // Логируем статистику работы MQTT
             Serial.printf("MQTT stats - Sent: %lu, Failed: %lu, Reconnects: %lu\n",
                          mqttManager->getMessagesSent(),
                          mqttManager->getMessagesFailed(),
@@ -324,11 +302,10 @@ void loop() {
         }
     }
     
-    // ===== ОБНОВЛЕНИЕ ДИСПЛЕЯ =====
-    // Обновляем дисплей каждые 200 мс (не слишком часто, чтобы не тратить ресурсы)
+    // ===== 11. ОБНОВЛЕНИЕ ДИСПЛЕЯ =====
     static unsigned long lastDisplayUpdate = 0;
-    if (millis() - lastDisplayUpdate > 200) {
-        lastDisplayUpdate = millis();
+    if (now - lastDisplayUpdate > 200) {
+        lastDisplayUpdate = now;
         
         SystemState currentState = ST_IDLE;
         ErrorType currentError = ERR_NONE;
@@ -343,16 +320,14 @@ void loop() {
                       pump.isPowerRelayOn(), scale.getEmptyWeight());
     }
     
-    // ===== КОМАНДЫ ИЗ СЕРИЙНОГО ПОРТА =====
-    // Обработка отладочных команд, вводимых пользователем в Serial Monitor
+    // ===== 12. КОМАНДЫ ИЗ СЕРИЙНОГО ПОРТА =====
     if (Serial.available()) {
         String command = Serial.readStringUntil('\n');
         command.trim();
         
         if (command == "config") {
-            wifiManager.startConfigPortal();      // Запустить портал настройки
+            wifiManager.startConfigPortal();
         } else if (command == "status") {
-            // Вывод подробной информации о состоянии системы
             Serial.println("=== Device Status ===");
             Serial.printf("WiFi Configured: %s\n", wifiManager.isConfigured() ? "YES" : "NO");
             Serial.printf("WiFi Connected: %s\n", wifiManager.isConnected() ? "YES" : "NO");
@@ -366,16 +341,20 @@ void loop() {
             Serial.printf("Water: %.0f ml (%d cups)\n", waterVolume, (int)(waterVolume / CUP_VOLUME));
             
         } else if (command == "reset") {
-            wifiManager.resetSettings();           // Сброс настроек WiFi
+            wifiManager.resetSettings();
         } else if (command == "test one") {
-            if (stateMachine) stateMachine->handleMqttCommand(0);  // Тестовая команда
+            if (stateMachine) stateMachine->handleMqttCommand(0);
         } else if (command == "test two") {
-            if (stateMachine) stateMachine->handleMqttCommand(1);  // Тестовая команда
+            if (stateMachine) stateMachine->handleMqttCommand(1);
         } else if (command == "test stop") {
-            if (stateMachine) stateMachine->handleMqttCommand(2);  // Тестовая команда
+            if (stateMachine) stateMachine->handleMqttCommand(2);
+        } else if (command == "reboot") {
+            Serial.println("Rebooting...");
+            delay(100);
+            ESP.restart();
         }
     }
-
-    // Небольшая задержка для снижения нагрузки на процессор
-    delay(LOOP_DELAY);
+    
+    // ВАЖНО: Мы НЕ используем delay(LOOP_DELAY) в конце loop
+    // Вместо этого мы управляем частотой в начале функции
 }

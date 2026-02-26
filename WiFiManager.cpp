@@ -112,7 +112,7 @@ void WiFiManager::loop() {
                 }
             }
             // Проверяем таймаут подключения
-            else if (millis() - connectionStartTime > CONNECT_TIMEOUT) {
+            else if ((long)(millis() - connectionStartTime) > (long)CONNECT_TIMEOUT) {
                 Serial.println("Connection timeout, starting AP mode");  // Таймаут
                 startConfigPortal();  // Запускаем точку доступа для перенастройки
             }
@@ -290,16 +290,21 @@ void WiFiManager::handleSave() {
             newMqttUser.length() == 0 || newMqttPass.length() == 0) {
             
             // Отправляем страницу с ошибкой
-            File file = SPIFFS.open("/error.html", "r");
-            if (file) {
-                server.streamFile(file, "text/html");
-                file.close();
-            } else {
-                server.send(400, "text/plain", "All fields are required!");
+                File file = SPIFFS.open("/success.html", "r");
+                if (file) {
+                    server.streamFile(file, "text/html");
+                    file.close();
+                } else {
+                    server.send(200, "text/html", 
+                        "<html><body><h1>Configuration Saved!</h1>"
+                        "<p>Device will restart...</p></body></html>");
+                }
+    
+                // Минимальная задержка для отправки ответа
+                delay(100);  // Уменьшено с 1000 до 100 мс
+                ESP.restart();
             }
-            return;  // Выходим, не сохраняя данные
-        }
-        
+
         Serial.println("=== Saving Configuration ===");  // Заголовок в логе
         
         // Сохраняем WiFi credentials

@@ -9,6 +9,11 @@
 #include <U8g2lib.h>
 #include "config.h"
 
+// ==================== ПРЕДВАРИТЕЛЬНОЕ ОБЪЯВЛЕНИЕ ====================
+// Сообщаем компилятору, что класс StateMachine существует
+// без необходимости включать весь заголовочный файл
+class StateMachine;
+
 // ==================== ИКОНКИ ДЛЯ ДИСПЛЕЯ ====================
 // Иконки хранятся в PROGMEM (памяти программ) для экономии оперативной памяти
 // Формат: массив байтов для монохромного дисплея 128x64
@@ -135,7 +140,22 @@ private:
   void drawCalibrationScreen(float currentWeight);
   
   /** Экран успешного завершения калибровки */
-  void drawCalibrationSuccessScreen();
+  //void drawCalibrationSuccessScreen();
+
+  // ==================== УПРАВЛЕНИЕ НЕБЛОКИРУЮЩИМИ ЗАДЕРЖКАМИ ====================
+  enum DisplayWaitState {
+    WAIT_NONE,           // Нет ожидания
+    WAIT_RESET_MESSAGE,  // Ожидание после сообщения о сбросе
+    WAIT_CALIB_SUCCESS,  // Ожидание после успешной калибровки
+    WAIT_CALIB_ERROR     // Ожидание после ошибки калибровки
+  };
+  
+  DisplayWaitState waitState = WAIT_NONE;  // Текущее состояние ожидания
+  unsigned long waitStartTime = 0;          // Время начала ожидания
+  unsigned long waitDuration = 0;           // Длительность ожидания в мс
+  
+  // Указатель на StateMachine для обратного вызова после ожидания
+  StateMachine* stateMachine = nullptr;
   
 public:
   // ==================== КОНСТРУКТОР И ИНИЦИАЛИЗАЦИЯ ====================
@@ -191,7 +211,7 @@ public:
    * Показывает сообщение о выполнении сброса
    * @param isFullReset - true для полного сброса, false для сброса калибровки
    */
-  void showResetMessage(bool isFullReset);
+  //  void showResetMessage(bool isFullReset);
   
   // ==================== СТАТИЧЕСКИЕ УТИЛИТЫ ====================
   
@@ -225,6 +245,32 @@ public:
    * @return целевой объем воды
    */
   static float getTargetWaterVolume(float targetWeight, float emptyWeight);
+
+  /**
+   * Обновление состояния ожидания (должен вызываться из loop)
+   * @param sm - указатель на StateMachine для обратного вызова
+   */
+  void updateWaiting(StateMachine* sm);
+  
+  /**
+   * Показать сообщение о сбросе с неблокирующим ожиданием
+   * @param isFullReset - тип сброса
+   * @param sm - указатель на StateMachine
+   */
+  void showResetMessageNonBlocking(bool isFullReset, StateMachine* sm);
+  
+  /**
+   * Показать сообщение об успешной калибровке с неблокирующим ожиданием
+   * @param sm - указатель на StateMachine
+   */
+  void showCalibrationSuccessNonBlocking(StateMachine* sm);
+  
+  /**
+   * Показать сообщение об ошибке калибровки с неблокирующим ожиданием
+   * @param sm - указатель на StateMachine
+   */
+  void showCalibrationErrorNonBlocking(StateMachine* sm);
+
 };
 
 #endif
