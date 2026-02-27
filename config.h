@@ -40,6 +40,7 @@
 // ==================== ПАМЯТЬ ====================
 #define EEPROM_SIZE 512
 #define EEPROM_CALIB_ADDR 0
+#define EEPROM_WEB_PASS_ADDR 200
 
 // ==================== СБРОС ====================
 #define RESET_CALIB_TIME 10000
@@ -48,6 +49,10 @@
 // ==================== MQTT НАСТРОЙКИ ====================
 #define MQTT_RECONNECT_INTERVAL 5000
 #define MQTT_PUBLISH_INTERVAL 2000
+
+// ==================== ВЕБ-ИНТЕРФЕЙС ====================
+#define WEB_USERNAME "myadmin"      // Ваш логин
+#define WEB_PASSWORD "StrongPass123"  // Ваш пароль
 
 // ==================== СОСТОЯНИЯ СИСТЕМЫ ====================
 enum SystemState {

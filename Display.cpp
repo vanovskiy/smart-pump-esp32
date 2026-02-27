@@ -579,9 +579,18 @@ int Display::centerBlock(int blockWidth) {
 
 // ==================== СТАТИЧЕСКИЕ УТИЛИТЫ ====================
 int Display::mlToCups(float ml, int cupVolume) {
-  if (ml <= 0 || cupVolume <= 0) return 0;
-  if (ml > 10000) return 0;
-  return (int)(ml / cupVolume);
+    // Защита от деления на ноль
+    if (cupVolume <= 0) {
+        cupVolume = CUP_VOLUME;  // Просто используем значение по умолчанию
+    }
+    
+    // Защита от отрицательных и аномальных значений
+    if (ml <= 0) return 0;
+    if (ml > FULL_WATER_LEVEL * 2) {
+        return 0;  // Слишком большое значение - возвращаем 0
+    }
+    
+    return (int)(ml / cupVolume);
 }
 
 String Display::formatCupsNumber(int cups) {

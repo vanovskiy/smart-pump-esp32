@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Вход в систему</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="login-container">
+        <h1>🚰 Умная помпа</h1>
+        <form method="POST" action="/login">
+            <input type="text" name="username" placeholder="Логин" value="admin" readonly>
+            <input type="password" name="password" placeholder="Пароль" required>
+            <button type="submit">Войти</button>
+        </form>
+        <div class="info">
+            Логин: admin (не изменяется)<br>
+            Пароль по умолчанию: admin
+        </div>
+        <div id="error" class="error" style="display:none;"></div>
+    </div>
+    
+    <script>
+        // Проверяем, есть ли ошибка в URL
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('error')) {
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('error').textContent = 'Неверный пароль';
+        }
+    </script>
+</body>
+</html>

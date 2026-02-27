@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Умная помпа - панель управления</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚰 Умная помпа</h1>
+            <div class="header-buttons">
+                <button onclick="showChangePasswordDialog()" class="btn btn-secondary">🔐 Сменить пароль</button>
+                <a href="/logout" class="btn btn-danger">Выйти</a>
+            </div>
+        </div>
+
+        <!-- Основная информация -->
+        <div class="card">
+            <h2>Текущее состояние</h2>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Вес чайника</span>
+                    <span class="info-value" id="currentWeight">-- г</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Вес пустого</span>
+                    <span class="info-value" id="emptyWeight">-- г</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Вода</span>
+                    <span class="info-value" id="waterVolume">-- мл</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Кружек</span>
+                    <span class="info-value" id="cups">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Прогресс-бар -->
+        <div class="card">
+            <h2>Уровень воды</h2>
+            <div class="progress-container">
+                <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+            </div>
+            <div class="progress-labels">
+                <span>0 мл</span>
+                <span id="maxVolume">1700 мл</span>
+            </div>
+        </div>
+
+        <!-- Статус системы -->
+        <div class="card">
+            <h2>Состояние системы</h2>
+            <div class="status-grid">
+                <div class="status-item">
+                    <span class="status-label">Режим:</span>
+                    <span class="status-value" id="systemState">--</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Чайник:</span>
+                    <span class="status-value" id="kettlePresent">--</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">WiFi:</span>
+                    <span class="status-value" id="wifiStatus">--</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">MQTT:</span>
+                    <span class="status-value" id="mqttStatus">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Управление наливом -->
+        <div class="card">
+            <h2>Налив воды</h2>
+            <div class="button-grid">
+                <button class="btn btn-primary" onclick="fillCups(1)">1 кружка</button>
+                <button class="btn btn-primary" onclick="fillCups(2)">2 кружки</button>
+                <button class="btn btn-primary" onclick="fillCups(3)">3 кружки</button>
+                <button class="btn btn-primary" onclick="fillCups(4)">4 кружки</button>
+                <button class="btn btn-primary" onclick="fillCups(5)">5 кружек</button>
+                <button class="btn btn-primary" onclick="fillCups(6)">6 кружек</button>
+                <button class="btn btn-success" onclick="fillFull()">Полный чайник</button>
+                <button class="btn btn-danger" onclick="stopFill()">⏹️ Стоп</button>
+            </div>
+        </div>
+
+        <!-- Калибровка -->
+        <div class="card">
+            <h2>Калибровка</h2>
+            <div class="calibration-info">
+                <p>Коэффициент: <span id="calibrationFactor">--</span></p>
+                <p>Статус: <span id="calibrationStatus">--</span></p>
+            </div>
+            <button class="btn btn-warning" onclick="startCalibration()">🔄 Калибровка пустого чайника</button>
+        </div>
+    </div>
+
+    <!-- Модальное окно смены пароля -->
+    <div id="passwordModal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <h3>Смена пароля</h3>
+            <input type="password" id="oldPassword" placeholder="Старый пароль">
+            <input type="password" id="newPassword" placeholder="Новый пароль (мин. 4 символа)">
+            <input type="password" id="confirmPassword" placeholder="Подтвердите пароль">
+            <div class="modal-buttons">
+                <button onclick="changePassword()" class="btn btn-primary">Сохранить</button>
+                <button onclick="closeModal()" class="btn btn-secondary">Отмена</button>
+            </div>
+            <div id="passwordError" class="error" style="display:none;"></div>
+        </div>
+    </div>
+
+    <script src="/script.js"></script>
+</body>
+</html>
