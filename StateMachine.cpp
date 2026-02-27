@@ -3,26 +3,60 @@
 // Версия с неблокирующим зуммером и защитой от переполнения millis()
 
 #include "StateMachine.h"
+#include "debug.h"
 #include <Arduino.h>
+
+static bool checkScaleError(StateMachine* sm, const char* stateName) {
+    if (sm == nullptr) {
+        Serial.println("ERROR: StateMachine is null in checkScaleError");
+        return false;
+    }
+    
+    if (!sm->getScale().isReady()) {
+        Serial.printf("[%s] Scale not ready, entering ERROR state\n", stateName);
+        sm->toError(ERR_HX711_TIMEOUT);
+        return false;
+    }
+    return true;
+}
 
 // ==================== IDLE STATE ====================
 IdleState::IdleState() {
     lastPowerCheckTime = 0;
     pressedHandled = false;
+    DPRINTLN("🏁 IdleState: создан");
 }
 
 void IdleState::enter(StateMachine* sm) {
-    Serial.println("Entering IDLE state");
+    DENTER("IdleState::enter");
+    LOG_INFO("🏁 Вход в режим ОЖИДАНИЕ");
     sm->getPump().pumpOff();
     pressedHandled = false;
+    DEXIT("IdleState::enter");
 }
 
 void IdleState::exit(StateMachine* sm) {
-    Serial.println("Exiting IDLE state");
+    DENTER("IdleState::exit");
+    LOG_INFO("🏁 Выход из режима ОЖИДАНИЕ");
+    DEXIT("IdleState::exit");
 }
 
 void IdleState::update(StateMachine* sm) {
-    sm->getScale().update();
+    DENTER("IdleState::update");
+    
+    // Проверка готовности весов
+    if (!checkScaleError(sm, "IDLE")) {
+        DEXIT("IdleState::update (scale error)");
+        return;
+    }
+    
+    // Проверяем результат update()
+    if (!sm->getScale().update()) {
+        LOG_ERROR("🏁 Ошибка чтения весов в режиме ожидания!");
+        sm->toError(ERR_HX711_TIMEOUT);
+        DEXIT("IdleState::update (scale update failed)");
+        return;
+    }
     
     // Защита от переполнения millis()
     if ((long)(millis() - lastPowerCheckTime) > 1000) {
@@ -32,26 +66,39 @@ void IdleState::update(StateMachine* sm) {
         float emptyWeight = sm->getScale().getEmptyWeight();
         float waterWeight = currentWeight - emptyWeight;
         
+        DVALF("Текущий вес", currentWeight);
+        DVALF("Вес пустого", emptyWeight);
+        DVALF("Вес воды", waterWeight);
+        
         if (sm->getScale().isKettlePresent()) {
+            DPRINTLN("🏁 Чайник на месте");
+            
             if (waterWeight >= MIN_WATER_LEVEL && !sm->getPump().isPumpOn()) {
+                LOG_OK("🏁 Включение питания чайника (вода ≥ 500мл)");
                 sm->getPump().setPowerRelay(true);
             } 
             else if (waterWeight < MIN_WATER_LEVEL - WEIGHT_HYST) {
+                LOG_INFO("🏁 Выключение питания чайника (вода < 500мл)");
                 sm->getPump().setPowerRelay(false);
             }
         } else {
+            DPRINTLN("🏁 Чайник отсутствует");
             sm->getPump().setPowerRelay(false);
         }
     }
+    
+    DEXIT("IdleState::update");
 }
 
 void IdleState::handleButton(StateMachine* sm, Button& button) {
+    DENTER("IdleState::handleButton");
+    
     if (!button.isPressed()) {
         pressedHandled = false;
     }
     
     if (button.isSingleClick()) {
-        Serial.println("IDLE: Single click");
+        LOG_INFO("🏁 Одинарный клик в режиме ожидания");
         
         if (sm->getScale().isReady() && sm->getScale().isKettlePresent()) {
             float currentWater = sm->getScale().getCurrentWeight() - sm->getScale().getEmptyWeight();
@@ -59,37 +106,46 @@ void IdleState::handleButton(StateMachine* sm, Button& button) {
             
             if (currentWater < MIN_WATER_LEVEL) {
                 targetWeight = sm->getScale().getEmptyWeight() + MIN_WATER_LEVEL;
+                LOG_INFO("🏁 Долив до минимального уровня (500мл)");
             } else {
                 targetWeight = sm->getScale().getCurrentWeight() + CUP_VOLUME;
+                LOG_INFO("🏁 Добавление одной кружки (250мл)");
             }
             
             float maxWeight = sm->getScale().getEmptyWeight() + FULL_WATER_LEVEL;
             if (targetWeight > maxWeight) {
                 targetWeight = maxWeight;
+                LOG_INFO("🏁 Ограничено максимальным уровнем (1700мл)");
             }
             
+            DPRINTF("🏁 Целевой вес: %.1f г\n", targetWeight);
             sm->toFilling(targetWeight);
         } else {
+            LOG_WARN("🏁 Невозможно налить: нет чайника или весы не готовы");
             sm->getPump().beepShortNonBlocking(2);
         }
         button.resetClicks();
     }
     else if (button.isDoubleClick()) {
-        Serial.println("IDLE: Double click");
+        LOG_INFO("🏁 Двойной клик в режиме ожидания");
         
         if (sm->getScale().isReady() && sm->getScale().isKettlePresent()) {
             float targetWeight = sm->getScale().getEmptyWeight() + FULL_WATER_LEVEL;
+            DPRINTF("🏁 Налив до полного: %.1f г\n", targetWeight);
             sm->toFilling(targetWeight);
         } else {
+            LOG_WARN("🏁 Невозможно налить: нет чайника или весы не готовы");
             sm->getPump().beepShortNonBlocking(2);
         }
         button.resetClicks();
     }
     else if (button.isTripleClick()) {
-        Serial.println("IDLE: Triple click - start calibration");
+        LOG_INFO("🏁 Тройной клик - запуск калибровки");
         sm->toCalibration();
         button.resetClicks();
     }
+    
+    DEXIT("IdleState::handleButton");
 }
 
 // ==================== FILLING STATE ====================
@@ -100,16 +156,19 @@ FillingState::FillingState(float target) {
     fillingInit = false;
     emergencyStopFlag = false;
     requiredServoState = SERVO_OVER_KETTLE;
+    DPRINTF("💧 FillingState: создан с целевым весом %.1f г\n", target);
 }
 
 void FillingState::enter(StateMachine* sm) {
-    Serial.println("Entering FILLING state");
-    Serial.print("Target weight: ");
-    Serial.println(targetWeight);
+    DENTER("FillingState::enter");
+    LOG_INFO("💧 Вход в режим НАЛИВ");
+    DPRINTF("💧 Целевой вес: %.1f г\n", targetWeight);
     
     if (!sm->getScale().isKettlePresent()) {
+        LOG_WARN("💧 Чайник отсутствует! Налив невозможен");
         sm->getPump().beepShortNonBlocking(2);
         sm->toIdle();
+        DEXIT("FillingState::enter (no kettle)");
         return;
     }
     
@@ -118,71 +177,125 @@ void FillingState::enter(StateMachine* sm) {
     fillingInit = true;
     emergencyStopFlag = false;
     
+    DPRINTF("💧 Стартовый вес: %.1f г\n", startWeight);
+    DPRINTF("💧 Требуется налить: %.1f г\n", targetWeight - startWeight);
+    
     sm->getPump().moveServoToKettle();
     sm->getPump().beepShortNonBlocking(1);
+    
+    DEXIT("FillingState::enter");
 }
 
 void FillingState::exit(StateMachine* sm) {
-    Serial.println("Exiting FILLING state");
+    DENTER("FillingState::exit");
+    LOG_INFO("💧 Выход из режима НАЛИВ");
     
     sm->getPump().pumpOff();
+    LOG_INFO("💧 Помпа выключена");
     
     if (sm->getPump().getServoState() != SERVO_IDLE) {
+        LOG_INFO("💧 Возврат сервопривода в исходное положение");
         sm->getPump().moveServoToIdle();
     }
+    
+    DEXIT("FillingState::exit");
 }
 
 void FillingState::update(StateMachine* sm) {
-    sm->getScale().update();
+    DENTER("FillingState::update");
     
-    if (!fillingInit) return;
+    // Проверка готовности весов
+    if (!checkScaleError(sm, "FILLING")) {
+        DEXIT("FillingState::update (scale error)");
+        return;
+    }
+    
+    // Проверяем результат update()
+    if (!sm->getScale().update()) {
+        LOG_ERROR("💧 Ошибка чтения весов в режиме налива!");
+        sm->toError(ERR_HX711_TIMEOUT);
+        DEXIT("FillingState::update (scale update failed)");
+        return;
+    }
+    
+    if (!fillingInit) {
+        LOG_WARN("💧 Налив не инициализирован");
+        DEXIT("FillingState::update (not initialized)");
+        return;
+    }
     
     float currentWeight = sm->getScale().getCurrentWeight();
+    DVALF("Текущий вес", currentWeight);
+    DVALF("Целевой вес", targetWeight);
+    
+    float remaining = targetWeight - currentWeight;
+    DVALF("Осталось налить", remaining);
     
     if (emergencyStopFlag) {
+        LOG_WARN("💧 Экстренная остановка налива (кнопка/MQTT)");
         sm->toIdle();
+        DEXIT("FillingState::update (emergency stop)");
         return;
     }
     
     if (!sm->getScale().isKettlePresent()) {
+        LOG_ERROR("💧 Чайник пропал во время налива!");
         sm->getPump().beepShortNonBlocking(2);
         sm->toError(ERR_NO_FLOW);
+        DEXIT("FillingState::update (kettle lost)");
         return;
     }
     
     // Защита от переполнения millis()
-    if ((long)(millis() - startTime) > (long)PUMP_TIMEOUT) {
+    unsigned long now = millis();
+    unsigned long elapsed = now - startTime;
+    DVALUL("Прошло времени", elapsed);
+    
+    if ((long)elapsed > (long)PUMP_TIMEOUT) {
+        LOG_ERROR("💧 Превышено время налива (2 минуты)");
         sm->toError(ERR_FILL_TIMEOUT);
+        DEXIT("FillingState::update (timeout)");
         return;
     }
     
-    if ((long)(millis() - startTime) > (long)NO_FLOW_TIMEOUT) {
+    if ((long)elapsed > (long)NO_FLOW_TIMEOUT) {
         if (sm->getScale().isWeightStable() && 
             fabs(currentWeight - startWeight) < 10.0f) {
+            LOG_ERROR("💧 Нет потока воды - вес не меняется");
             sm->toError(ERR_NO_FLOW);
+            DEXIT("FillingState::update (no flow)");
             return;
         }
     }
     
     if (sm->getPump().isServoInPosition() && !sm->getPump().isPumpOn()) {
         sm->getPump().pumpOn();
-        Serial.println("Pump ON");
+        LOG_OK("💧 Помпа включена");
     }
     
     if (currentWeight >= targetWeight - WEIGHT_HYST) {
+        LOG_OK("💧 Целевой вес достигнут");
+        DPRINTF("💧 Итоговый вес: %.1f г\n", currentWeight);
         sm->getPump().beepShortNonBlocking(2);
         sm->toIdle();
+        DEXIT("FillingState::update (target reached)");
         return;
     }
+    
+    DEXIT("FillingState::update (continuing)");
 }
 
 void FillingState::handleButton(StateMachine* sm, Button& button) {
+    DENTER("FillingState::handleButton");
+    
     if (button.isLongPress()) {
-        Serial.println("FILLING: Long press - emergency stop");
+        LOG_WARN("💧 Длительное нажатие - экстренная остановка налива");
         emergencyStopFlag = true;
         sm->getPump().beepShortNonBlocking(3);
         button.resetClicks();
     }
+    
+    DEXIT("FillingState::handleButton");
 }
 
 // ==================== CALIBRATION STATE ====================
@@ -208,7 +321,16 @@ void CalibrationState::exit(StateMachine* sm) {
 }
 
 void CalibrationState::update(StateMachine* sm) {
-    sm->getScale().update();
+    // Проверка готовности весов для калибровки
+    if (!checkScaleError(sm, "CALIBRATION")) {
+        return;
+    }
+    
+    if (!sm->getScale().update()) {
+        Serial.println("CALIBRATION: Scale update failed");
+        // В режиме калибровки не переходим в ошибку, просто продолжаем
+        return;
+    }
     // Дисплей обновляется в главном цикле
 }
 
@@ -256,8 +378,8 @@ ErrorState::ErrorState(ErrorType err) {
 }
 
 void ErrorState::enter(StateMachine* sm) {
-    Serial.print("Entering ERROR state. Error code: ");
-    Serial.println(error);
+    LOG_ERROR("⚠️ Вход в режим ОШИБКА");
+    DPRINTF("⚠️ Код ошибки: %d\n", error);
     
     sm->getPump().pumpOff();
     sm->getPump().setPowerRelay(false);

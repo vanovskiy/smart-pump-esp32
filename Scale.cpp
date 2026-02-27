@@ -1,212 +1,223 @@
 // файл: Scale.cpp
 // Реализация класса для работы с тензодатчиком HX711
-// Содержит логику фильтрации, калибровки и работы с EEPROM
 
 #include "Scale.h"
 #include <EEPROM.h>
+#include "debug.h"
 
 // ==================== ВНУТРЕННИЕ КОНСТАНТЫ ====================
-#define STABLE_WEIGHT_THRESHOLD 5.0f    // Максимальное изменение веса (г) для признания его стабильным
-#define STABLE_TIME_THRESHOLD 2000       // Минимальное время стабильности (мс) для признания веса стабильным
-#define MAX_WEIGHT_JUMP 500.0f           // Защита от выбросов: максимальный скачок веса за одно измерение (г)
-#define EEPROM_FLAG_VALUE 0xAA            // Маркер, указывающий, что в EEPROM сохранены валидные данные
+#define STABLE_WEIGHT_THRESHOLD 5.0f
+#define STABLE_TIME_THRESHOLD 2000
+#define MAX_WEIGHT_JUMP 500.0f
+#define EEPROM_FLAG_VALUE 0xAA
+#define DEFAULT_FACTOR 0.00042f
 
 // ==================== КОНСТРУКТОР ====================
-
-/**
- * Конструктор Scale
- * Инициализирует объект HX711 с заданными пинами и обнуляет все переменные
- * Устанавливает коэффициент калибровки по умолчанию 0.42
- */
 Scale::Scale() : 
-    scale(PIN_HX711_DT, PIN_HX711_SCK),  // Передаем пины в конструктор HX711
+    scale(PIN_HX711_DT, PIN_HX711_SCK),
     emptyWeight(0),
     currentWeight(0),
-    calibrationFactor(0.42f),            // Коэффициент по умолчанию (требует точной настройки)
+    calibrationFactor(DEFAULT_FACTOR),
     lastReadWeight(0),
-    isCalibrated(false),
     lastStableReadTime(0),
     readIndex(0),
-    eepromAddr(0)
+    eepromAddr(0),
+    isCalibrated(false),
+    factorCalibrated(false)
 {
-    // Инициализируем кольцевой буфер нулями
     for (int i = 0; i < STABLE_READINGS; i++) readings[i] = 0;
+    DPRINTLN("⚖️ Весы: объект создан");
 }
 
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
-
-/**
- * Запуск датчика и тарирование
- * Даем датчику время на стабилизацию (500 мс) и устанавливаем текущий вес как ноль
- * 
- * @return true - датчик успешно инициализирован
- */
 bool Scale::begin() {
-    // Ждем готовности датчика
     delay(500);
-    
-    // Тарируем (устанавливаем текущий вес как ноль)
     scale.tare();
     
-    Serial.println("Scale initialized");
-    Serial.print("Calibration factor: ");
-    Serial.println(calibrationFactor);
+    LOG_INFO("⚖️ Весы инициализированы");
+    DPRINTF("⚖️ Коэффициент по умолчанию: %f\n", calibrationFactor);
     
     return true;
 }
 
-/**
- * Устанавливает новый коэффициент калибровки
- * Используется после точной калибровки с эталонным грузом
- * 
- * @param factor - новый коэффициент
- */
-void Scale::setCalibrationFactor(float factor) {
-    calibrationFactor = factor;
-    Serial.print("Calibration factor set to: ");
-    Serial.println(calibrationFactor);
-}
-
-/**
- * Выполняет тарирование (обнуление) весов
- * Устанавливает текущий физический вес как нулевую точку
- * Полезно для компенсации дрейфа нуля
- */
 void Scale::tare() {
     scale.tare();
-    Serial.println("Scale tared");
+    LOG_OK("⚖️ Тарирование выполнено");
 }
 
-// ==================== КАЛИБРОВКА ====================
+// ==================== КАЛИБРОВКА КОЭФФИЦИЕНТА ====================
+bool Scale::calibrateFactorViaSerial() {
+    Serial.println("\n=== РЕЖИМ КАЛИБРОВКИ ДАТЧИКА ===");
+    Serial.println("Этот режим калибрует коэффициент преобразования для вашего конкретного датчика.");
+    Serial.println("Вам понадобится груз с ИЗВЕСТНЫМ ВЕСОМ (например, 500г, 1000г, 2000г).");
+    Serial.println();
+    
+    while (true) {
+        Serial.println("Шаг 1: Положите на весы груз с ИЗВЕСТНЫМ ВЕСОМ");
+        Serial.println("Сейчас будет отображаться сырое значение АЦП. Дождитесь стабилизации...");
+        
+        unsigned long startTime = millis();
+        while (millis() - startTime < 5000) {
+            if (scale.available()) {
+                Serial.printf("\rСырое значение АЦП: %8ld", scale.read());
+            }
+            delay(100);
+        }
+        Serial.println("\n");
+        
+        Serial.println("Шаг 2: Введите точный вес вашего груза В ГРАММАХ");
+        Serial.print("> ");
+        
+        float knownWeight = 0;
+        while (!Serial.available()) {
+            delay(100);
+        }
+        
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        knownWeight = input.toFloat();
+        
+        if (knownWeight <= 0) {
+            Serial.println("Ошибка: неверный вес! Введите положительное число.");
+            continue;
+        }
+        
+        Serial.printf("Вы ввели: %.1f г\n", knownWeight);
+        
+        Serial.println("Шаг 3: Измеряем стабильное сырое значение...");
+        long rawValue = getStableRawValue(20);
+        
+        float newFactor = knownWeight / rawValue;
+        
+        Serial.printf("Сырое значение АЦП: %ld\n", rawValue);
+        Serial.printf("Рассчитанный коэффициент: %f\n", newFactor);
+        
+        Serial.println("\nШаг 4: Подтвердить калибровку? (Д/Н)");
+        Serial.print("> ");
+        
+        while (!Serial.available()) {
+            delay(100);
+        }
+        
+        char confirm = Serial.read();
+        if (confirm == 'Д' || confirm == 'д' || confirm == 'Y' || confirm == 'y') {
+            calibrationFactor = newFactor;
+            factorCalibrated = true;
+            saveCalibrationToEEPROM(eepromAddr);
+            
+            LOG_OK("⚖️ Калибровка выполнена успешно!");
+            DPRINTF("⚖️ Новый коэффициент: %f\n", calibrationFactor);
+            return true;
+        } else {
+            Serial.println("\nКалибровка отменена. Начинаем заново...\n");
+            delay(1000);
+        }
+    }
+}
 
-/**
- * Сохраняет вес пустого чайника и помечает датчик как откалиброванный
- * Вызывается пользователем при тройном клике
- * 
- * @param weight - измеренный вес пустого чайника
- */
+bool Scale::calibrateFactor(float knownWeight) {
+    if (knownWeight <= 0) return false;
+    
+    long rawValue = getStableRawValue(20);
+    calibrationFactor = knownWeight / rawValue;
+    factorCalibrated = true;
+    
+    DPRINTF("⚖️ Коэффициент откалиброван: %f (АЦП=%ld, вес=%.1f)\n", 
+            calibrationFactor, rawValue, knownWeight);
+    
+    return true;
+}
+
+void Scale::resetFactor() {
+    calibrationFactor = DEFAULT_FACTOR;
+    factorCalibrated = false;
+    LOG_WARN("⚖️ Калибровочный коэффициент сброшен к значению по умолчанию");
+}
+
+// ==================== КАЛИБРОВКА ПУСТОГО ЧАЙНИКА ====================
 void Scale::calibrateEmpty(float weight) {
     emptyWeight = weight;
     isCalibrated = true;
-    Serial.print("Empty weight calibrated: ");
-    Serial.print(emptyWeight);
-    Serial.println(" g");
+    LOG_OK("⚖️ Вес пустого чайника откалиброван");
+    DPRINTF("⚖️ Вес пустого чайника: %.1f г\n", emptyWeight);
 }
 
-/**
- * Возвращает вес пустого чайника
- * @return вес в граммах
- */
-float Scale::getEmptyWeight() {
-    return emptyWeight;
+void Scale::setCalibrationFactor(float factor) {
+    calibrationFactor = factor;
+    LOG_INFO("⚖️ Коэффициент калибровки установлен");
+    DPRINTF("⚖️ Новый коэффициент: %f\n", calibrationFactor);
 }
 
-/**
- * Получает сырое (нефильтрованное) значение веса
- * Просто умножает сырые показания АЦП на коэффициент калибровки
- * 
- * @return вес в граммах (без фильтрации)
- */
-float Scale::getRawWeight() {
-    if (!scale.available()) return 0;
+// ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
+long Scale::getStableRawValue(int samples) {
+    long sum = 0;
+    int count = 0;
     
-    long rawValue = scale.read();
-    float weight = rawValue * calibrationFactor;
-    return weight;
+    for (int i = 0; i < samples; i++) {
+        if (scale.available()) {
+            sum += scale.read();
+            count++;
+        }
+        delay(50);
+    }
+    
+    if (count > 0) return sum / count;
+    return 0;
 }
 
-/**
- * Возвращает текущий отфильтрованный вес
- * @return вес в граммах (после скользящего среднего)
- */
-float Scale::getCurrentWeight() {
-    return currentWeight;
-}
-
-// ==================== ИЗМЕРЕНИЕ И ФИЛЬТРАЦИЯ ====================
-
-/**
- * Основной метод обновления веса
- * Должен вызываться каждый цикл loop()
- * 
- * Выполняет:
- * 1. Проверку доступности датчика
- * 2. Чтение сырых данных
- * 3. Защиту от аномальных скачков
- * 4. Фильтрацию скользящим средним
- * 
- * @return true - измерение успешно обновлено
- */
+// ==================== ОБНОВЛЕНИЕ И ФИЛЬТРАЦИЯ ====================
 bool Scale::update() {
-    // Если датчик не отвечает - сбрасываем вес для безопасности
     if (!scale.available()) {
         currentWeight = 0;
         return false;
     }
 
-    // Читаем сырые данные и преобразуем в граммы
     long rawValue = scale.read();
     float newRaw = rawValue * calibrationFactor;
     
-    // Вес не может быть отрицательным
     if (newRaw < 0) newRaw = 0;
     
-    // Защита от аномальных скачков (помехи, выбросы)
     if (currentWeight > 0 && fabs(newRaw - currentWeight) > MAX_WEIGHT_JUMP) {
-        // Слишком большой скачок - игнорируем это чтение
+        DPRINTF("⚖️ Скачок веса: %.1f -> %.1f (игнорируется)\n", currentWeight, newRaw);
         return true;
     }
 
-    // Фильтрация скользящим средним (простое усреднение последних STABLE_READINGS измерений)
     readings[readIndex] = newRaw;
     readIndex = (readIndex + 1) % STABLE_READINGS;
 
-    float sum = 0;
-    for (int i = 0; i < STABLE_READINGS; i++) {
-        sum += readings[i];
+    float sorted[STABLE_READINGS];
+    memcpy(sorted, readings, sizeof(readings));
+    
+    for (int i = 1; i < STABLE_READINGS; i++) {
+        float key = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > key) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = key;
     }
-    currentWeight = sum / STABLE_READINGS;
+    
+    currentWeight = sorted[STABLE_READINGS / 2];
 
     return true;
 }
 
 // ==================== ПРОВЕРКИ СОСТОЯНИЯ ====================
-
-/**
- * Проверяет готовность весов к работе
- * @return true - датчик откалиброван и отвечает на запросы
- */
 bool Scale::isReady() {
-    if (!isCalibrated) return false;
-    return scale.available();
+    return factorCalibrated && scale.available();
 }
 
-/**
- * Определяет наличие чайника на весах
- * Использует гистерезис для предотвращения ложных срабатываний при колебаниях
- * 
- * @return true - чайник стоит на весах
- */
 bool Scale::isKettlePresent() {
-    // Чайник считается присутствующим, если текущий вес >= вес пустого чайника минус гистерезис
     return currentWeight >= (emptyWeight - WEIGHT_HYST);
 }
 
-/**
- * Проверяет стабильность веса (отсутствие изменений)
- * Используется для детекции отсутствия потока воды при работающей помпе
- * 
- * @return true - вес не меняется длительное время
- */
 bool Scale::isWeightStable() {
-    // Если вес изменился менее чем на порог...
     if (fabs(currentWeight - lastReadWeight) < STABLE_WEIGHT_THRESHOLD) {
-        // ...и такое состояние длится дольше времени стабильности
         if (millis() - lastStableReadTime > STABLE_TIME_THRESHOLD) {
-            return true;  // Вес стабилен
+            return true;
         }
     } else {
-        // Вес изменился - сбрасываем таймер стабильности
         lastStableReadTime = millis();
         lastReadWeight = currentWeight;
     }
@@ -214,83 +225,58 @@ bool Scale::isWeightStable() {
 }
 
 // ==================== РАБОТА С EEPROM ====================
-
-/**
- * Сохраняет калибровочные данные в EEPROM
- * Формат хранения:
- * - addr:     флаг (0xAA) - маркер наличия данных
- * - addr+4:   emptyWeight (float, 4 байта)
- * - addr+8:   calibrationFactor (float, 4 байта)
- * 
- * @param addr - начальный адрес в EEPROM (должен быть от 0 до 508)
- */
 void Scale::saveCalibrationToEEPROM(int addr) {
-    // Защита от выхода за пределы EEPROM (оставляем место для 4+4+флаг)
     if (addr < 0 || addr > 508) return;
     
     eepromAddr = addr;
-    EEPROM.write(addr, EEPROM_FLAG_VALUE);        // Записываем флаг
-    EEPROM.put(addr + 4, emptyWeight);             // Записываем вес пустого чайника
-    EEPROM.put(addr + 8, calibrationFactor);       // Записываем коэффициент
-    EEPROM.commit();                                // Фиксируем изменения в памяти
+    EEPROM.write(addr, EEPROM_FLAG_VALUE);
+    EEPROM.put(addr + 4, emptyWeight);
+    EEPROM.put(addr + 8, calibrationFactor);
+    EEPROM.write(addr + 12, factorCalibrated ? EEPROM_FLAG_VALUE : 0);
+    EEPROM.commit();
     
-    Serial.println("Calibration saved to EEPROM");
+    LOG_OK("⚖️ Калибровка сохранена в EEPROM");
 }
 
-/**
- * Загружает калибровочные данные из EEPROM
- * Если флаг не совпадает с EEPROM_FLAG_VALUE, данные считаются отсутствующими
- * 
- * @param addr - начальный адрес в EEPROM
- */
 void Scale::loadCalibrationFromEEPROM(int addr) {
-    // Проверка допустимости адреса
     if (addr < 0 || addr > 508) {
         isCalibrated = false;
+        factorCalibrated = false;
         return;
     }
     
     eepromAddr = addr;
     
-    // Проверяем наличие сохраненных данных по флагу
     if (EEPROM.read(addr) == EEPROM_FLAG_VALUE) {
-        // Данные найдены - загружаем
         EEPROM.get(addr + 4, emptyWeight);
         EEPROM.get(addr + 8, calibrationFactor);
+        factorCalibrated = (EEPROM.read(addr + 12) == EEPROM_FLAG_VALUE);
         isCalibrated = true;
-        Serial.print("Calibration loaded: empty weight = ");
-        Serial.print(emptyWeight);
-        Serial.print(" g, factor = ");
-        Serial.println(calibrationFactor);
+        
+        LOG_INFO("⚖️ Калибровка загружена из EEPROM");
+        DPRINTF("⚖️   Вес пустого: %.1f г, коэф: %f\n", emptyWeight, calibrationFactor);
     } else {
-        // Данных нет - используем значения по умолчанию
         isCalibrated = false;
+        factorCalibrated = false;
         emptyWeight = 0;
-        calibrationFactor = 0.42f;
-        Serial.println("No calibration found in EEPROM");
+        calibrationFactor = DEFAULT_FACTOR;
+        LOG_WARN("⚖️ Калибровка не найдена в EEPROM");
     }
 }
 
-/**
- * Сбрасывает калибровку
- * Очищает флаг в EEPROM и сбрасывает внутренние переменные
- */
 void Scale::resetCalibration() {
     isCalibrated = false;
+    factorCalibrated = false;
     emptyWeight = 0;
-    calibrationFactor = 0.42f;
+    calibrationFactor = DEFAULT_FACTOR;
     
     if (eepromAddr >= 0 && eepromAddr <= 508) {
-        // Очищаем флаг
         EEPROM.write(eepromAddr, 0x00);
-        
-        // Очищаем emptyWeight
+        EEPROM.write(eepromAddr + 12, 0x00);
         float zero = 0.0f;
         EEPROM.put(eepromAddr + 4, zero);
-        
-        // Восстанавливаем calibrationFactor по умолчанию
-        EEPROM.put(eepromAddr + 8, 0.42f);
-        
+        EEPROM.put(eepromAddr + 8, DEFAULT_FACTOR);
         EEPROM.commit();
     }
+    LOG_WARN("⚖️ Калибровка сброшена к значениям по умолчанию");
 }

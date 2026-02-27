@@ -1,493 +1,346 @@
 // файл: MQTTManager.cpp
-// Реализация методов класса MQTTManager
+// Реализация методов класса MQTTManager с исправлением утечек памяти
 
-#include "MQTTManager.h"  // Подключаем заголовочный файл
+#include "MQTTManager.h"
 
 // ==================== КОНСТАНТЫ ====================
-// Настройки MQTT брокера Dealgate
-#define MQTT_SERVER "mqtt.dealgate.ru"      // Адрес MQTT брокера
-#define MQTT_PORT 1883                       // Порт MQTT (стандартный, без TLS)
-#define MQTT_RECONNECT_DELAY 5000             // Задержка между попытками переподключения (5 сек)
-#define MQTT_PUBLISH_INTERVAL 5000            // Интервал проверки необходимости публикации (5 сек)
+#define MQTT_SERVER "mqtt.dealgate.ru"
+#define MQTT_PORT 1883
+#define MQTT_RECONNECT_DELAY 5000
+#define MQTT_PUBLISH_INTERVAL 5000
 
-// Глобальный указатель на экземпляр класса для использования в статическом callback
 static MQTTManager* instance = nullptr;
 
 // ==================== КОНСТРУКТОР ====================
-
-/**
- * Конструктор MQTTManager
- * Инициализирует MQTT клиент, сохраняет ссылки на компоненты и устанавливает начальные значения
- * 
- * @param s - ссылка на объект весов
- * @param sm - ссылка на объект конечного автомата
- * @param wm - ссылка на объект WiFi менеджера
- */
 MQTTManager::MQTTManager(Scale& s, StateMachine& sm, WiFiManager& wm) 
-    : mqttClient(wifiClient), scale(s), stateMachine(sm), wifiManager(wm) {
-    // Список инициализации:
-    // - mqttClient инициализируется с wifiClient
-    // - scale, stateMachine, wifiManager инициализируются ссылками на переданные объекты
+    : mqttClient(wifiClient), 
+      scale(s), 
+      stateMachine(sm), 
+      wifiManager(wm),
+      lastReconnectAttempt(0),
+      lastPublishTime(0),
+      lastHeartbeatTime(0),
+      lastConnectionCheckTime(0),
+      messagesSent(0),
+      messagesFailed(0),
+      reconnectAttempts(0),
+      lastWaterState(-1),
+      lastKettlePresent(false),
+      lastMqttConnected(false),
+      commandCallback(nullptr)
+{
+    instance = this;
+    clientId = "smartpump";
     
-    instance = this;  // Сохраняем указатель на себя для статического callback
+    // Инициализируем топики
+    waterLevelTopic = "/devices/pump/water_level";
+    kettleTopic = "/devices/pump/kettle";
+    fillingTopic = "/devices/pump/filling";
+}
+
+// ==================== ДЕСТРУКТОР ====================
+MQTTManager::~MQTTManager() {
+    // Отключаемся от MQTT
+    if (mqttClient.connected()) {
+        mqttClient.disconnect();
+    }
     
-    clientId = "smartpump";  // Базовый client ID (будет дополнен MAC-адресом в основном файле)
+    // Очищаем строки для освобождения памяти
+    clearStrings();
     
-    // ==================== НАСТРОЙКА ТОПИКОВ ====================
-    // Топики для Dealgate (формат: /devices/устройство/параметр)
-    waterLevelTopic = "/devices/pump/water_level";    // Топик для уровня воды
-    kettleTopic = "/devices/pump/kettle";              // Топик для наличия чайника
-    fillingTopic = "/devices/pump/filling";            // Топик для команд налива
+    // Закрываем Preferences, если они были открыты
+    preferences.end();
     
-    // ==================== ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ ====================
-    lastReconnectAttempt = 0;          // Последняя попытка переподключения не выполнялась
-    lastPublishTime = 0;                // Публикация еще не выполнялась
-    lastHeartbeatTime = 0;               // Heartbeat еще не отправлялся
-    lastConnectionCheckTime = 0;         // Проверка соединения еще не выполнялась
-    lastWaterState = -1;                 // Инициализируем некорректным значением (чтобы первая публикация точно сработала)
-    lastKettlePresent = false;           // Инициализируем (по умолчанию чайника нет)
-    lastMqttConnected = false;           // Инициализируем (соединения нет)
+    // Обнуляем instance
+    if (instance == this) {
+        instance = nullptr;
+    }
     
-    messagesSent = 0;                    // Счетчик отправленных сообщений
-    messagesFailed = 0;                  // Счетчик неудачных отправок
-    reconnectAttempts = 0;                // Счетчик попыток переподключения
-    
-    commandCallback = nullptr;            // Callback пока не задан
+    Serial.println("MQTTManager destroyed, memory freed");
+}
+
+// ==================== ОЧИСТКА СТРОК ====================
+void MQTTManager::clearStrings() {
+    // Очищаем все строки (освобождаем память)
+    clientId = String();
+    waterLevelTopic = String();
+    kettleTopic = String();
+    fillingTopic = String();
+    mqttUser = String();
+    mqttPass = String();
 }
 
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
-
-/**
- * Инициализация MQTT менеджера
- * Настраивает параметры подключения, выводит информацию и пытается подключиться
- */
 void MQTTManager::begin() {
-    // Настройка MQTT клиента
-    mqttClient.setServer(MQTT_SERVER, MQTT_PORT);     // Устанавливаем сервер и порт
-    mqttClient.setCallback(mqttCallback);              // Устанавливаем callback для входящих сообщений
-    mqttClient.setBufferSize(512);                      // Увеличиваем размер буфера для JSON сообщений
+    mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
+    mqttClient.setCallback(mqttCallback);
+    mqttClient.setBufferSize(512);
     
-    // Вывод информации о конфигурации MQTT
-    Serial.println("=== MQTT Configuration ===");
+    Serial.println("=== MQTT Конфигурация ===");
     Serial.printf("Client ID: %s\n", clientId.c_str());
-    Serial.printf("Server: %s:%d\n", MQTT_SERVER, MQTT_PORT);
-    Serial.printf("Water level topic: %s\n", waterLevelTopic.c_str());
-    Serial.printf("Kettle present topic: %s\n", kettleTopic.c_str());
-    Serial.println("Water level mapping:");
+    Serial.printf("Сервер: %s:%d\n", MQTT_SERVER, MQTT_PORT);
+    Serial.printf("Топик уровня воды: %s\n", waterLevelTopic.c_str());
+    Serial.printf("Топик наличия чайника: %s\n", kettleTopic.c_str());
+    Serial.println("Уровни воды:");
     Serial.println("  0 = Пустой (< 500 мл)");
     Serial.println("  1 = Низкий (500-1000 мл)");
     Serial.println("  2 = Нормальный (> 1000 мл)");
-    Serial.println("Kettle present mapping:");
-    Serial.println("  0 = Чайника нет");
-    Serial.println("  1 = Чайник на месте");
     
-    // Загружаем учетные данные из Preferences
     if (loadCredentials()) {
-        Serial.println("✓ MQTT credentials loaded from Preferences");
-        Serial.printf("  Username: %s\n", mqttUser.c_str());
-        Serial.printf("  Password: %s\n", "********");  // Пароль не выводим в явном виде
+        Serial.println("✓ Учетные данные MQTT загружены из Preferences");
+        Serial.printf("  Пользователь: %s\n", mqttUser.c_str());
+        Serial.printf("  Пароль: %s\n", "********");
         
-        // Пробуем подключиться
         connect();
     } else {
-        Serial.println("⚠ No MQTT credentials found in Preferences");
-        Serial.println("  Use serial command to set:");
-        Serial.println("  mqtt_set <username> <password>");
+        Serial.println("⚠ Учетные данные MQTT не найдены в Preferences");
+        Serial.println("  Используйте команду для установки:");
+        Serial.println("  mqtt_set <логин> <пароль>");
     }
     
     Serial.println("==========================");
 }
 
 // ==================== ОСНОВНОЙ ЦИКЛ ====================
-
-/**
- * Основной цикл MQTT менеджера
- * Должен вызываться каждый loop()
- * Проверяет соединение, переподключается при необходимости, публикует данные
- */
 void MQTTManager::loop() {
-    unsigned long now = millis();  // Текущее время в миллисекундах
+    unsigned long now = millis();
     
-    // ===== ПРОВЕРКА СОСТОЯНИЯ СОЕДИНЕНИЯ (раз в секунду) =====
     if (now - lastConnectionCheckTime > 1000) {
-        lastConnectionCheckTime = now;  // Обновляем время проверки
-        bool currentlyConnected = mqttClient.connected();  // Текущее состояние
+        lastConnectionCheckTime = now;
+        bool currentlyConnected = mqttClient.connected();
         
-        // Если состояние изменилось - выводим сообщение
         if (currentlyConnected != lastMqttConnected) {
-            lastMqttConnected = currentlyConnected;  // Запоминаем новое состояние
+            lastMqttConnected = currentlyConnected;
             if (currentlyConnected) {
-                Serial.println("✓ MQTT connected to Dealgate");  // Подключились
+                Serial.println("✓ MQTT подключен к Dealgate");
             } else {
-                Serial.println("✗ MQTT disconnected from Dealgate");  // Отключились
+                Serial.println("✗ MQTT отключен от Dealgate");
             }
         }
     }
     
-    // ===== ПЕРЕПОДКЛЮЧЕНИЕ ПРИ НЕОБХОДИМОСТИ =====
     if (!mqttClient.connected()) {
-        // Если прошло достаточно времени с последней попытки
         if (now - lastReconnectAttempt > MQTT_RECONNECT_DELAY) {
-            lastReconnectAttempt = now;  // Обновляем время попытки
-            reconnectAttempts++;          // Увеличиваем счетчик попыток
-            Serial.printf("Attempting MQTT reconnect #%lu...\n", reconnectAttempts);
-            connect();  // Пытаемся подключиться
+            lastReconnectAttempt = now;
+            reconnectAttempts++;
+            Serial.printf("Попытка переподключения MQTT #%lu...\n", reconnectAttempts);
+            connect();
         }
     } else {
-        // Если подключены - обрабатываем входящие сообщения
         mqttClient.loop();
         
-        // ===== ПУБЛИКАЦИЯ СОСТОЯНИЙ =====
-        // Проверяем раз в 5 секунд, публикуем только при изменениях
         if (now - lastPublishTime > MQTT_PUBLISH_INTERVAL) {
-            lastPublishTime = now;  // Обновляем время проверки
-            publishWaterState();     // Публикуем уровень воды (если изменился)
-            publishKettleState();    // Публикуем наличие чайника (если изменилось)
+            lastPublishTime = now;
+            publishWaterState();
+            publishKettleState();
         }
     }
 }
 
-// ==================== ПОДКЛЮЧЕНИЕ К MQTT ====================
-
-/**
- * Подключение к MQTT брокеру
- * Использует учетные данные из WiFiManager
- */
+// ==================== ПОДКЛЮЧЕНИЕ ====================
 void MQTTManager::connect() {
-    // Проверяем наличие учетных данных через WiFiManager
     if (!wifiManager.hasMqttCredentials()) {
-        Serial.println("⚠ Cannot connect: No MQTT credentials");
-        return;  // Выходим, если нет данных
+        Serial.println("⚠ Невозможно подключиться: нет учетных данных MQTT");
+        return;
     }
     
-    Serial.print("Connecting to Dealgate MQTT... ");
+    Serial.print("Подключение к Dealgate MQTT... ");
     
-    // Пытаемся подключиться с указанными учетными данными
     bool connected = mqttClient.connect(
-        clientId.c_str(),                          // Client ID
-        wifiManager.getMqttUser().c_str(),         // Имя пользователя
-        wifiManager.getMqttPass().c_str(),         // Пароль
-        NULL, 0, false, NULL                       // Дополнительные параметры (не используются)
+        clientId.c_str(),
+        wifiManager.getMqttUser().c_str(),
+        wifiManager.getMqttPass().c_str(),
+        NULL, 0, false, NULL
     );
     
     if (connected) {
-        Serial.println("OK");  // Успешное подключение
-        
-        messagesFailed = 0;  // Сбрасываем счетчик ошибок
-        
-        // Подписываемся на команды
+        Serial.println("OK");
+        messagesFailed = 0;
         subscribe();
-        
-        // Отправляем текущие статусы при подключении
         publishWaterState();
         publishKettleState();
-        
     } else {
-        // Ошибка подключения - выводим код ошибки
-        Serial.printf("FAILED (rc=%d)\n", mqttClient.state());
-        messagesFailed++;  // Увеличиваем счетчик ошибок
+        Serial.printf("ОШИБКА (код=%d)\n", mqttClient.state());
+        messagesFailed++;
     }
 }
 
-// ==================== ПОДПИСКА НА ТОПИКИ ====================
-
-/**
- * Подписка на топик команд налива
- */
+// ==================== ПОДПИСКА ====================
 void MQTTManager::subscribe() {
-    // Подписываемся на топик для получения команд
     if (mqttClient.subscribe(fillingTopic.c_str())) {
-        Serial.printf("Subscribed to: %s\n", fillingTopic.c_str());  // Успешная подписка
+        Serial.printf("Подписка на топик: %s\n", fillingTopic.c_str());
     }
 }
 
-// ==================== ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ ====================
-
-/**
- * Статический callback для обработки входящих MQTT сообщений
- * Вызывается библиотекой PubSubClient при получении сообщения
- * 
- * @param topic - топик сообщения
- * @param payload - данные сообщения
- * @param length - длина данных
- */
+// ==================== CALLBACK ====================
 void MQTTManager::mqttCallback(char* topic, byte* payload, unsigned int length) {
-    if (!instance) return;  // Если экземпляр класса не создан - выходим
+    if (!instance) return;
     
-    // Создаем нуль-терминированную строку из payload
-    char message[length + 1];
-    memcpy(message, payload, length);  // Копируем данные
-    message[length] = '\0';             // Добавляем завершающий ноль
+    // Создаем копию сообщения с нуль-терминатором
+    char* message = new char[length + 1];
+    if (!message) return;  // Проверка выделения памяти
     
-    Serial.printf("MQTT command received [%s]: %s\n", topic, message);  // Отладочный вывод
+    memcpy(message, payload, length);
+    message[length] = '\0';
     
-    // Проверяем, какой это топик
+    Serial.printf("MQTT команда получена [%s]: %s\n", topic, message);
+    
     String topicStr = String(topic);
     
-    // Если это топик налива (команды)
     if (topicStr == instance->fillingTopic) {
-        // Сообщение должно быть просто числом (режим)
-        int mode = atoi(message);  // Преобразуем строку в число
+        int mode = atoi(message);
         
-        // Проверяем, что команда в допустимом диапазоне (1-8) и callback задан
         if (mode >= 1 && mode <= 8 && instance->commandCallback) {
-            Serial.printf("Executing filling command: mode %d\n", mode);
-            instance->commandCallback(mode);  // Вызываем callback
+            Serial.printf("Выполнение команды налива: режим %d\n", mode);
+            instance->commandCallback(mode);
         }
     }
+    
+    // Освобождаем память
+    delete[] message;
 }
 
-// ==================== ПУБЛИКАЦИЯ СООБЩЕНИЙ ====================
-
-/**
- * Внутренний метод для публикации сообщений в MQTT
- * 
- * @param topic - топик для публикации
- * @param payload - данные для отправки
- * @param retained - флаг retained сообщения (сохранять на брокере)
- * @return true - если публикация успешна
- */
+// ==================== ПУБЛИКАЦИЯ ====================
 bool MQTTManager::publish(const String& topic, const String& payload, bool retained) {
-    if (!mqttClient.connected()) {  // Если нет подключения
-        messagesFailed++;  // Увеличиваем счетчик ошибок
-        return false;      // Выходим с ошибкой
+    if (!mqttClient.connected()) {
+        messagesFailed++;
+        return false;
     }
     
-    // Пытаемся опубликовать сообщение
-    bool result = mqttClient.publish(topic.c_str(), payload.c_str(), retained);
+    // Ограничиваем длину payload для предотвращения переполнения буфера
+    String safePayload = payload;
+    if (safePayload.length() > 250) {
+        safePayload = safePayload.substring(0, 250);
+        Serial.println("⚠ Payload слишком длинный, обрезан");
+    }
+    
+    bool result = mqttClient.publish(topic.c_str(), safePayload.c_str(), retained);
     
     if (result) {
-        messagesSent++;  // Увеличиваем счетчик отправленных
-        Serial.printf("MQTT publish [%s]: %s\n", topic.c_str(), payload.c_str());  // Отладка
+        messagesSent++;
+        Serial.printf("MQTT публикация [%s]: %s\n", topic.c_str(), safePayload.c_str());
     } else {
-        messagesFailed++;  // Увеличиваем счетчик ошибок
-        Serial.printf("MQTT publish FAILED [%s]\n", topic.c_str());  // Отладка ошибки
+        messagesFailed++;
+        Serial.printf("MQTT публикация ОШИБКА [%s]\n", topic.c_str());
     }
     
-    return result;  // Возвращаем результат
+    return result;
 }
 
-// ==================== РАСЧЕТ СОСТОЯНИЯ ВОДЫ ====================
-
-/**
- * Расчет состояния воды на основе текущего объема
- * 
- * @return 0 - пустой (<500 мл), 1 - низкий (500-1000 мл), 2 - нормальный (>1000 мл)
- */
+// ==================== РАСЧЕТ УРОВНЯ ВОДЫ ====================
 int MQTTManager::calculateWaterState() {
-    // Вычисляем объем воды (текущий вес минус вес пустого чайника)
     float waterVolume = scale.getCurrentWeight() - scale.getEmptyWeight();
-    if (waterVolume < 0) waterVolume = 0;  // Защита от отрицательных значений
+    if (waterVolume < 0) waterVolume = 0;
     
-    // Для воды 1 грамм = 1 миллилитр
     float volumeML = waterVolume;
     
     int state;
     if (volumeML < WATER_LEVEL_EMPTY) {
-        state = 0;  // Пустой
-        Serial.printf("Water volume: %.0f ml -> state 0 (EMPTY)\n", volumeML);
+        state = 0;
+        Serial.printf("Объем воды: %.0f мл -> состояние 0 (ПУСТО)\n", volumeML);
     } else if (volumeML <= WATER_LEVEL_LOW) {
-        state = 1;  // Низкий
-        Serial.printf("Water volume: %.0f ml -> state 1 (LOW)\n", volumeML);
+        state = 1;
+        Serial.printf("Объем воды: %.0f мл -> состояние 1 (НИЗКИЙ)\n", volumeML);
     } else {
-        state = 2;  // Нормальный
-        Serial.printf("Water volume: %.0f ml -> state 2 (NORMAL)\n", volumeML);
+        state = 2;
+        Serial.printf("Объем воды: %.0f мл -> состояние 2 (НОРМАЛЬНЫЙ)\n", volumeML);
     }
     
     return state;
 }
 
 // ==================== ПУБЛИКАЦИЯ УРОВНЯ ВОДЫ ====================
-
-/**
- * Публикация уровня воды в MQTT
- * Публикует только при изменении состояния
- * 
- * @return true - если публикация успешна или состояние не изменилось
- */
 bool MQTTManager::publishWaterState() {
-    // Проверяем, есть ли чайник на весах
     if (!scale.isKettlePresent()) {
-        // Если чайника нет, публикуем 0 (пустой)
         int currentState = 0;
         
-        // Если состояние изменилось с предыдущего раза
         if (currentState != lastWaterState) {
-            Serial.printf("Water state (no kettle): %d -> %d\n", lastWaterState, currentState);
+            Serial.printf("Состояние воды (нет чайника): %d -> %d\n", lastWaterState, currentState);
             
-            String payload = String(currentState);  // Просто число, не JSON
-            bool result = publish(waterLevelTopic, payload, false);  // Публикуем
+            String payload = String(currentState);
+            bool result = publish(waterLevelTopic, payload, false);
             
             if (result) {
-                lastWaterState = currentState;  // Обновляем кэш
+                lastWaterState = currentState;
             }
             
             return result;
         }
-        return true;  // Состояние не изменилось - не публикуем (но это не ошибка)
+        return true;
     }
     
-    // Чайник есть - вычисляем состояние
     int currentState = calculateWaterState();
     
-    // Публикуем, если состояние изменилось
     if (currentState != lastWaterState) {
-        Serial.printf("Water state changed: %d -> %d\n", lastWaterState, currentState);
+        Serial.printf("Состояние воды изменилось: %d -> %d\n", lastWaterState, currentState);
         
-        // Отправляем просто число (не JSON!)
         String payload = String(currentState);
         bool result = publish(waterLevelTopic, payload, false);
         
         if (result) {
-            lastWaterState = currentState;  // Обновляем кэш
+            lastWaterState = currentState;
         }
         
         return result;
     }
     
-    return true;  // Ничего не изменилось, но это не ошибка
+    return true;
 }
 
 // ==================== ПУБЛИКАЦИЯ НАЛИЧИЯ ЧАЙНИКА ====================
-
-/**
- * Публикация наличия чайника в MQTT
- * Публикует только при изменении состояния
- * 
- * @return true - если публикация успешна или состояние не изменилось
- */
 bool MQTTManager::publishKettleState() {
-    bool kettlePresent = scale.isKettlePresent();  // Текущее состояние
-    int value = kettlePresent ? 1 : 0;              // Преобразуем в 0/1 для MQTT
+    bool kettlePresent = scale.isKettlePresent();
+    int value = kettlePresent ? 1 : 0;
     
-    // Публикуем, если состояние изменилось
     if (value != lastKettlePresent) {
-        Serial.printf("Kettle present changed: %d -> %d\n", lastKettlePresent, value);
+        Serial.printf("Наличие чайника изменилось: %d -> %d\n", lastKettlePresent, value);
         
-        String payload = String(value);  // Просто число
-        bool result = publish(kettleTopic, payload, false);  // Публикуем
+        String payload = String(value);
+        bool result = publish(kettleTopic, payload, false);
         
         if (result) {
-            lastKettlePresent = value;  // Обновляем кэш
+            lastKettlePresent = value;
         }
         
         return result;
     }
     
-    return true;  // Ничего не изменилось
+    return true;
 }
 
 // ==================== РАБОТА С УЧЕТНЫМИ ДАННЫМИ ====================
-
-/**
- * Загрузка MQTT учетных данных из Preferences
- * 
- * @return true - если данные загружены и не пустые
- */
 bool MQTTManager::loadCredentials() {
-    Preferences prefs;  // Создаем временный объект Preferences
-    prefs.begin("mqtt", true);  // Открываем namespace "mqtt" в режиме чтения
-    mqttUser = prefs.getString("user", "");  // Читаем имя пользователя
-    mqttPass = prefs.getString("pass", "");  // Читаем пароль
-    prefs.end();  // Закрываем Preferences
-    
-    // Возвращаем true, если оба поля не пустые
+    // Больше НЕ работаем с Preferences напрямую
+    mqttUser = wifiManager.getMqttUser();
+    mqttPass = wifiManager.getMqttPass();
     return (mqttUser.length() > 0 && mqttPass.length() > 0);
 }
 
-/**
- * Сохранение MQTT учетных данных в Preferences
- * 
- * @param user - имя пользователя
- * @param pass - пароль
- * @return true - если сохранение успешно
- */
 bool MQTTManager::saveCredentials(const String& user, const String& pass) {
-    if (user.length() == 0 || pass.length() == 0) {  // Проверка на пустые значения
-        Serial.println("✗ Cannot save empty credentials");
-        return false;  // Не сохраняем пустые данные
-    }
-    
-    preferences.begin("mqtt", false);  // Открываем namespace "mqtt" в режиме записи
-    preferences.putString("user", user);  // Сохраняем имя пользователя
-    preferences.putString("pass", pass);  // Сохраняем пароль
-    
-    // Проверяем, что данные сохранились (читаем обратно)
-    String verifyUser = preferences.getString("user", "");
-    String verifyPass = preferences.getString("pass", "");
-    
-    preferences.end();  // Закрываем Preferences
-    
-    // Если данные совпадают с сохраненными
-    if (verifyUser == user && verifyPass == pass) {
-        Serial.println("✓ MQTT credentials saved to Preferences");
-        Serial.printf("  Username: %s\n", user.c_str());
-        Serial.printf("  Password: %s\n", "********");  // Пароль не выводим
-        
-        // Сохраняем также в оперативную память
-        mqttUser = user;
-        mqttPass = pass;
-        
-        return true;  // Успех
-    } else {
-        Serial.println("✗ Failed to verify saved credentials");
-        return false;  // Ошибка верификации
-    }
+    // Делегируем сохранение WiFiManager'у
+    return wifiManager.saveMqttCredentials(user, pass);
 }
 
-/**
- * Очистка MQTT учетных данных из Preferences
- */
 void MQTTManager::clearCredentials() {
-    preferences.begin("mqtt", false);  // Открываем namespace "mqtt" в режиме записи
-    preferences.remove("user");         // Удаляем ключ "user"
-    preferences.remove("pass");         // Удаляем ключ "pass"
-    preferences.end();                  // Закрываем Preferences
-    
-    // Очищаем оперативную память
+    wifiManager.clearMqttCredentials();
     mqttUser = "";
     mqttPass = "";
-    
-    Serial.println("✓ MQTT credentials cleared from Preferences");
 }
 
-/**
- * Проверка наличия MQTT учетных данных
- * 
- * @return true - если данные есть (в памяти или в Preferences)
- */
 bool MQTTManager::hasCredentials() {
-    // Сначала проверяем в оперативной памяти (быстрее)
-    if (mqttUser.length() > 0 && mqttPass.length() > 0) {
-        return true;
-    }
-    
-    // Если в памяти нет, проверяем в Preferences
-    preferences.begin("mqtt", true);  // Открываем в режиме чтения
-    bool hasUser = preferences.isKey("user");  // Проверяем наличие ключа "user"
-    bool hasPass = preferences.isKey("pass");  // Проверяем наличие ключа "pass"
-    preferences.end();  // Закрываем Preferences
-    
-    return hasUser && hasPass;  // Возвращаем true, если оба ключа есть
+    return wifiManager.hasMqttCredentials();
 }
 
 // ==================== УПРАВЛЕНИЕ ПОДКЛЮЧЕНИЕМ ====================
-
-/**
- * Отключение от MQTT брокера
- */
 void MQTTManager::disconnect() {
-    if (mqttClient.connected()) {  // Если подключены
-        mqttClient.disconnect();     // Отключаемся
-        Serial.println("MQTT disconnected");  // Отладочное сообщение
+    if (mqttClient.connected()) {
+        mqttClient.disconnect();
+        Serial.println("MQTT отключен");
     }
 }
 
-/**
- * Принудительное переподключение к MQTT брокеру
- */
 void MQTTManager::reconnect() {
-    disconnect();   // Сначала отключаемся
-    delay(100);      // Небольшая задержка
-    connect();       // Пытаемся подключиться заново
+    disconnect();
+    delay(100);
+    connect();
 }
