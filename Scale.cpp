@@ -5,13 +5,6 @@
 #include <EEPROM.h>
 #include "debug.h"
 
-// ==================== ВНУТРЕННИЕ КОНСТАНТЫ ====================
-#define STABLE_WEIGHT_THRESHOLD 5.0f
-#define STABLE_TIME_THRESHOLD 2000
-#define MAX_WEIGHT_JUMP 500.0f
-#define EEPROM_FLAG_VALUE 0xAA
-#define DEFAULT_FACTOR 0.00042f
-
 // ==================== КОНСТРУКТОР ====================
 Scale::Scale() : 
     scale(PIN_HX711_DT, PIN_HX711_SCK),

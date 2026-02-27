@@ -7,6 +7,13 @@
 #include "config.h"
 #include <GyverHX711.h>
 
+// ==================== ВНУТРЕННИЕ КОНСТАНТЫ ====================
+#define STABLE_WEIGHT_THRESHOLD 5.0f    // Порог стабильности веса (граммы)
+#define STABLE_TIME_THRESHOLD 2000      // Время стабильности для детекции (мс)
+#define MAX_WEIGHT_JUMP 500.0f          // Максимальный скачок веса (защита от выбросов)
+#define EEPROM_FLAG_VALUE 0xAA           // Флаг валидных данных в EEPROM
+#define DEFAULT_FACTOR 0.00042f          // Коэффициент по умолчанию
+
 class Scale {
   private:
     // ==================== ОСНОВНЫЕ ПЕРЕМЕННЫЕ ====================
